@@ -70,6 +70,11 @@ jobs:
           key: msrv-${{ needs.crate_metadata.outputs.msrv }}
           cache-on-failure: true
 
+      - name: Install elan and Lean
+        run: |
+          curl -sSfL https://elan.lean-lang.org/elan-init.sh | sh -s -- -y --default-toolchain "$(cat crates/sharp-lean/lean/lean-toolchain)"
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
       - name: Run tests
         run: cargo test --workspace --locked --all-targets
 
@@ -151,14 +156,14 @@ jobs:
       matrix:
         job:
           # Each job in this matrix defines a build target. The following custom keys control the pipeline steps:
-          # - `test: true`: Enables the test suite to be run for this build.
+          # - `test: true`: Enables the test suite to be run for this build. Only targets ci.yml never tests set it.
           # - `wasm: true`: Triggers an additional WebAssembly build and packaging for this release.
 
           ## macOS: aarch64, x86_64
           - {
               target: aarch64-apple-darwin,
               os: macos-latest,
-              test: true,
+              test: false,
               pgo: true,
             }
           - {
@@ -177,7 +182,7 @@ jobs:
           - {
               target: x86_64-unknown-linux-gnu,
               os: ubuntu-latest,
-              test: true,
+              test: false,
               wasm: true,
             }
           - {
@@ -333,6 +338,12 @@ jobs:
         run: |
           echo "binary for target '${{ matrix.job.target }}' requires the following GLIBC versions:"
           strings "${{ steps.bin.outputs.BIN_PATH }}" | grep GLIBC_ || echo "No GLIBC version strings found."
+
+      - name: Install elan and Lean
+        if: matrix.job.test
+        run: |
+          curl -sSfL https://elan.lean-lang.org/elan-init.sh | sh -s -- -y --default-toolchain "$(cat crates/sharp-lean/lean/lean-toolchain)"
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - name: run tests
         if: matrix.job.test && !startsWith(github.ref, 'refs/pull/')
