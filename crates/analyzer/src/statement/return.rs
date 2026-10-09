@@ -454,26 +454,37 @@ pub fn handle_return_value<'ctx, A>(
             && !expected_return_type.is_falsable()
             && !expected_return_type.has_template()
         {
+            // PHP# writes `false` in backticks and cannot write `int|false`, so its help asks only for a path
+            // that never returns `false`.
+            let (false_str, note, help) = if context.dialect.is_sharp() {
+                (
+                    "`false`",
+                    "The declared return type does not permit `false`, but this path could return `false`.".to_owned(),
+                    format!("Ensure this {kind} path never returns `false`."),
+                )
+            } else {
+                (
+                    "'false'",
+                    "The declared return type does not permit 'false', but the analysis indicates that 'false' or a falsable type could be returned from this path.".to_owned(),
+                    format!(
+                        "You can either change the return type declaration of `{function_name}` to include 'false' (e.g., '{expected_return_type_str}|false'), or ensure that this {kind} path never returns 'false'.",
+                    ),
+                )
+            };
             context.collector.report_with_code(
                 IssueCode::FalsableReturnStatement,
                 Issue::error(format!(
-                    "{capitalized_kind} `{function_name}` is declared to return `{expected_return_type_str}` but possibly returns 'false' (inferred as `{inferred_return_type_str}`).",
+                    "{capitalized_kind} `{function_name}` is declared to return `{expected_return_type_str}` but possibly returns {false_str} (inferred as `{inferred_return_type_str}`).",
                 ))
                 .with_annotation(
                     Annotation::primary(return_value.span())
-                        .with_message("Potentially 'false' returned here.")
+                        .with_message(format!("Potentially {false_str} returned here."))
                 )
                 .with_annotation(
                     Annotation::secondary(function_like_metadata.span)
                         .with_message(format!("Return type declared as non-falsable `{expected_return_type_str}` here")))
-                .with_note(
-                    "The declared return type does not permit 'false', but the analysis indicates that 'false' or a falsable type could be returned from this path."
-                )
-                .with_help(
-                    format!(
-                        "You can either change the return type declaration of `{function_name}` to include 'false' (e.g., '{expected_return_type_str}|false'), or ensure that this {kind} path never returns 'false'.",
-                    )
-                ),
+                .with_note(note)
+                .with_help(help),
             );
         }
 
@@ -729,14 +740,27 @@ fn handle_property_hook_return<'ctx, A>(
         && !expected_return_type.is_falsable()
         && !expected_return_type.has_template()
     {
+        let (annotation, note, help) = if context.dialect.is_sharp() {
+            (
+                "Potentially `false` returned here.",
+                "The property type does not permit `false`, but this expression could return `false`.",
+                "Ensure the hook never returns `false`.".to_owned(),
+            )
+        } else {
+            (
+                "Potentially 'false' returned here.",
+                "The property type does not permit false, but this expression could return false.",
+                format!("Ensure the hook never returns false, or change the property type to `{expected_str}|false`."),
+            )
+        };
         context.collector.report_with_code(
             IssueCode::FalsableReturnStatement,
             Issue::error(format!(
                 "Property hook `{hook_name}` returns falsable value `{inferred_str}` but property type is `{expected_str}`.",
             ))
-            .with_annotation(Annotation::primary(return_value.span()).with_message("Potentially 'false' returned here."))
-            .with_note("The property type does not permit false, but this expression could return false.")
-            .with_help(format!("Ensure the hook never returns false, or change the property type to `{expected_str}|false`.")),
+            .with_annotation(Annotation::primary(return_value.span()).with_message(annotation))
+            .with_note(note)
+            .with_help(help),
         );
         return;
     }

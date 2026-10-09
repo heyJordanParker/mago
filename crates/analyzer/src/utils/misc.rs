@@ -17,6 +17,7 @@ use mago_syntax::cst::UnaryPrefixOperator;
 use crate::code::IssueCode;
 use crate::context::Context;
 use crate::utils::names::display_atomic;
+use crate::utils::names::display_bool;
 use crate::utils::names::display_variable_name;
 
 /// Checks for two types of logical issues between a set of existing assertions (`formula_1`)
@@ -93,19 +94,20 @@ fn report_redundant_condition<A>(
         (IssueCode::RedundantCondition, "Redundant condition")
     };
     let clause_string = display_clause(context, redundant_clause);
+    let holds = display_bool(context, true);
 
     context.collector.report_with_code(
         kind,
         Issue::warning(title)
             .with_annotation(
                 Annotation::primary(redundant_span)
-                    .with_message(format!("This condition (`{clause_string}`) is always true here")),
+                    .with_message(format!("This condition (`{clause_string}`) is always {holds} here")),
             )
             .with_annotation(
                 Annotation::secondary(original_span)
-                    .with_message("This was already established as true by a previous condition here"),
+                    .with_message(format!("This was already established as {holds} by a previous condition here")),
             )
-            .with_note("The analyzer determined this condition is guaranteed to be true based on preceding logic, making this check unnecessary.")
+            .with_note(format!("The analyzer determined this condition is guaranteed to be {holds} based on preceding logic, making this check unnecessary."))
             .with_help("Consider removing this redundant conditional check to simplify the code.")
     );
 }
@@ -126,20 +128,21 @@ fn report_paradoxical_condition<A>(
     let new_condition_str =
         conflicting_clause.iter().map(|clause| display_clause(context, clause)).collect::<Vec<_>>().join(" && ");
     let established_fact_str = display_clause(context, original_clause);
+    let holds = display_bool(context, true);
 
     context.collector.report_with_code(
         IssueCode::ParadoxicalCondition,
         Issue::error("Paradoxical condition")
             .with_annotation(
                 Annotation::primary(paradox_span)
-                    .with_message(format!("This condition (`{new_condition_str}`) can never be true here")),
+                    .with_message(format!("This condition (`{new_condition_str}`) can never be {holds} here")),
             )
             .with_annotation(
                 Annotation::secondary(original_clause.condition_span)
                     .with_message("Because of this preceding condition..."),
             )
             .with_note(format!(
-                "...the analyzer knows that `{established_fact_str}` must be true for this code path to be taken."
+                "...the analyzer knows that `{established_fact_str}` must be {holds} for this code path to be taken."
             ))
             .with_note(format!(
                 "Therefore, this new condition (`{new_condition_str}`) directly contradicts that established fact."

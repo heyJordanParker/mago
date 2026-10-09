@@ -143,7 +143,11 @@ where
             Issue::error("Left operand in arithmetic operation cannot be `null`.")
                 .with_annotation(Annotation::primary(binary.lhs.span()).with_message("This is `null`."))
                 .with_note("Performing arithmetic operations on `null` typically results in `0`.")
-                .with_help("Ensure the left operand is a number (int/float) or a type that can be cast to a number."),
+                .with_help(if context.dialect.is_sharp() {
+                    "Ensure the left operand is a number (int/float)."
+                } else {
+                    "Ensure the left operand is a number (int/float) or a type that can be cast to a number."
+                }),
         );
 
         // In Psalm, null operand often leads to mixed result or halts analysis for this path.
@@ -169,7 +173,11 @@ where
             Issue::error("Right operand in arithmetic operation cannot be `null`.")
                 .with_annotation(Annotation::primary(binary.rhs.span()).with_message("This is `null`."))
                 .with_note("Performing arithmetic operations on `null` typically results in `0`.")
-                .with_help("Ensure the right operand is a number (int/float) or a type that can be cast to a number."),
+                .with_help(if context.dialect.is_sharp() {
+                    "Ensure the right operand is a number (int/float)."
+                } else {
+                    "Ensure the right operand is a number (int/float) or a type that can be cast to a number."
+                }),
         );
 
         final_result_type = Some(get_mixed());

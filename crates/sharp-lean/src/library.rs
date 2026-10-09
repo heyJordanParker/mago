@@ -5,7 +5,6 @@ use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Mutex;
 
 use mago_build_id::BUILD_ID;
 
@@ -27,20 +26,36 @@ pub(crate) fn runner(library: &Path) -> PathBuf {
     library.join(".lake/build/bin").join(format!("sharp-lean{}", std::env::consts::EXE_SUFFIX))
 }
 
-/// Writes the library's package to `lean/<build id>` in Mago's cache folder and builds it with Lake, once per build ID.
-/// Builds in one process take turns, builds in different processes run in their own staging folders, and the first
-/// one renamed into place wins. A new build ID deletes every older build.
-pub(crate) fn build() -> io::Result<PathBuf> {
-    static BUILD: Mutex<()> = Mutex::new(());
+/// Whether `library` holds the runner and every package file with the bytes Mago embeds.
+fn is_built(library: &Path) -> bool {
+    runner(library).is_file()
+        && PACKAGE
+            .iter()
+            .all(|(path, source)| fs::read(library.join(path)).is_ok_and(|bytes| bytes == source.as_bytes()))
+}
 
+/// Writes the library's package to `lean/<build id>.staging` in Mago's cache folder, builds it with Lake and renames it
+/// to `lean/<build id>`, once per build ID. Builds take turns under an exclusive lock on `lean/build.lock`, across
+/// threads and processes alike. A build that lost its runner or a package file, as a cache cleaner leaves it, is
+/// deleted and built again. A finished build deletes every other folder in `lean/`: older builds and any staging
+/// folder a dead build left.
+pub(crate) fn build() -> io::Result<PathBuf> {
     let builds = cache_root()?.join("lean");
     let library = builds.join(format!("{BUILD_ID:032x}"));
-    let _build = BUILD.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if runner(&library).is_file() {
+    fs::create_dir_all(&builds)?;
+    let lock = fs::File::options().create(true).truncate(false).write(true).open(builds.join("build.lock"))?;
+    lock.lock()?;
+    if is_built(&library) {
         return Ok(library);
     }
 
-    let staging = library.with_extension(std::process::id().to_string());
+    let staging = library.with_extension("staging");
+    for folder in [&library, &staging] {
+        match fs::remove_dir_all(folder) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
+    }
     for (path, source) in PACKAGE {
         let target = staging.join(path);
         fs::create_dir_all(target.parent().unwrap_or(&staging))?;
@@ -57,13 +72,17 @@ pub(crate) fn build() -> io::Result<PathBuf> {
         )));
     }
 
-    if fs::rename(&staging, &library).is_err() {
-        fs::remove_dir_all(&staging)?;
-    }
+    fs::rename(&staging, &library).map_err(|error| {
+        io::Error::other(format!(
+            "Mago could not move the Lean runtime library from {} to {}: {error}",
+            staging.display(),
+            library.display()
+        ))
+    })?;
 
     for entry in fs::read_dir(&builds)? {
         let old = entry?.path();
-        if old.extension().is_none() && old.is_dir() && old != library {
+        if old.is_dir() && old != library {
             fs::remove_dir_all(old)?;
         }
     }

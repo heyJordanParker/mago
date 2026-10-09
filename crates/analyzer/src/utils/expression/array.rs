@@ -50,6 +50,7 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::context::scope::var_has_root;
 use crate::utils::names::display_atomic;
+use crate::utils::names::display_bool;
 use crate::utils::names::display_sharp_type;
 use crate::utils::names::display_type;
 
@@ -1207,6 +1208,7 @@ where
                 };
 
                 if should_report_error {
+                    let never = display_bool(context, false);
                     context.collector.report_with_code(
                         IssueCode::ImpossibleNonnullEntryCheck,
                         Issue::warning(format!(
@@ -1216,7 +1218,7 @@ where
                         ))
                         .with_annotation(
                             Annotation::primary(span)
-                                .with_message(format!("`isset` on key `{array_key}` will always be false here."))
+                                .with_message(format!("`isset` on key `{array_key}` will always be {never} here."))
                         )
                         .with_note(
                             format!(

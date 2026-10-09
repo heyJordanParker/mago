@@ -70,6 +70,7 @@ use crate::service::telemetry::HangWatcher;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::service::telemetry::SlowestFiles;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod compile;
 
 /// Per-file cached state for incremental analysis.
