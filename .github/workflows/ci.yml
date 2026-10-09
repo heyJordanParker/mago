@@ -204,6 +204,32 @@ jobs:
       - name: cargo build
         run: cargo build --release --locked
 
+  # cd.yml builds the WebAssembly package only for a release, so this check stops a pull request from breaking it.
+  wasm-check:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: install rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - name: cache rust toolchain
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-rust-wasm
+          cache-on-failure: true
+
+      - name: cargo check the WebAssembly package
+        run: cargo check -p mago-wasm --target wasm32-unknown-unknown --locked
+
   typos-check:
     runs-on: ubuntu-latest
     permissions:
@@ -219,7 +245,7 @@ jobs:
   # blocks merges without a change to the repository's rules.
   ci-passed:
     if: always()
-    needs: [build-and-test, release-build, typos-check]
+    needs: [build-and-test, release-build, wasm-check, typos-check]
     runs-on: ubuntu-latest
     steps:
       - name: Every job passed
