@@ -26,6 +26,7 @@ use crate::context::scope::conditional_scope::IfConditionalScope;
 use crate::context::scope::if_scope::IfScope;
 use crate::error::AnalysisError;
 use crate::reconciler::reconcile_keyed_types;
+use crate::utils::names::display_bool;
 use crate::utils::names::display_truth;
 use crate::utils::names::display_type;
 
@@ -289,18 +290,19 @@ where
     if expression_type.is_always_falsy() {
         let type_id = display_type(context, expression_type);
         let truth = display_truth(context, false);
+        let value = display_bool(context, false);
         context.collector.report_with_code(
             IssueCode::ImpossibleCondition,
             Issue::warning(format!(
-                "This condition (type `{type_id}`) will always evaluate to false."
+                "This condition (type `{type_id}`) will always evaluate to {value}."
             ))
             .with_annotation(
                 Annotation::primary(expression.span())
                     .with_message(format!("Expression of type `{type_id}` is always {truth}")),
             )
-            .with_note(
-                "Because this condition is always false, the code block it controls will never be executed."
-            )
+            .with_note(format!(
+                "Because this condition is always {value}, the code block it controls will never be executed."
+            ))
             .with_help(
                 "Check the logic of this expression. If the code block is intended to be unreachable, consider removing it. Otherwise, revise the condition.",
             ),
@@ -308,18 +310,19 @@ where
     } else if expression_type.is_always_truthy() {
         let type_id = display_type(context, expression_type);
         let truth = display_truth(context, true);
+        let value = display_bool(context, true);
         context.collector.report_with_code(
             IssueCode::RedundantCondition,
             Issue::warning(format!(
-                "This condition (type `{type_id}`) will always evaluate to true."
+                "This condition (type `{type_id}`) will always evaluate to {value}."
             ))
             .with_annotation(
                 Annotation::primary(expression.span())
                     .with_message(format!("Expression of type `{type_id}` is always {truth}")),
             )
-            .with_note(
-                "Because this condition is always true, the code block it controls will always execute if this part of the code is reached."
-            ).with_note(
+            .with_note(format!(
+                "Because this condition is always {value}, the code block it controls will always execute if this part of the code is reached."
+            )).with_note(
                 "The explicit condition might be redundant."
             )
             .with_help(

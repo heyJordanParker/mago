@@ -73,6 +73,7 @@ use crate::resolver::method::get_declared_collection;
 use crate::statement::r#loop::assignment_map_visitor::get_assignment_map;
 use crate::statement::r#loop::cleaner::clean_nodes;
 use crate::utils::names::display_atomic;
+use crate::utils::names::display_bool;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_code_member;
 use crate::utils::names::display_missing_imports;
@@ -196,13 +197,15 @@ where
             let type_id = artifacts
                 .get_expression_type(*condition)
                 .map_or_else(|| "false".to_owned(), |condition_type| display_type(context, condition_type));
+            let value = display_bool(context, false);
 
             context.collector.report_with_code(
                 IssueCode::ImpossibleCondition,
-                Issue::warning(format!("This loop condition (type `{type_id}`) will always evaluate to false."))
+                Issue::warning(format!("This loop condition (type `{type_id}`) will always evaluate to {value}."))
                     .with_annotation(
-                        Annotation::primary(condition.span())
-                            .with_message("This condition is always false, the loop body will never execute"),
+                        Annotation::primary(condition.span()).with_message(format!(
+                            "This condition is always {value}, the loop body will never execute"
+                        )),
                     )
                     .with_help("Check the logic of this loop condition. The loop body is unreachable."),
             );

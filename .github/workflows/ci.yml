@@ -204,6 +204,49 @@ jobs:
       - name: cargo build
         run: cargo build --release --locked
 
+  # cd.yml builds the WebAssembly package only for a release, so this job runs its build steps on every pull request.
+  wasm-build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: install rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - name: cache rust toolchain
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-rust-wasm
+          cache-on-failure: true
+
+      - name: Cache wasm-pack
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-pack
+          key: wasm-pack-0.13.1-${{ runner.os }}
+
+      - name: Install wasm-pack and build WASM
+        run: |
+          if ! command -v wasm-pack &>/dev/null; then
+            cargo install wasm-pack --version 0.13.1 --locked
+          fi
+          cd crates/wasm
+          wasm-pack build -d pkg --release
+
+      - name: check the files cd.yml packs
+        run: |
+          for file in mago_wasm.d.ts mago_wasm.js mago_wasm_bg.js mago_wasm_bg.wasm package.json; do
+            test -f "crates/wasm/pkg/$file" || { echo "::error::wasm-pack wrote no crates/wasm/pkg/$file"; exit 1; }
+          done
+
   typos-check:
     runs-on: ubuntu-latest
     permissions:
@@ -219,7 +262,7 @@ jobs:
   # blocks merges without a change to the repository's rules.
   ci-passed:
     if: always()
-    needs: [build-and-test, release-build, typos-check]
+    needs: [build-and-test, release-build, wasm-build, typos-check]
     runs-on: ubuntu-latest
     steps:
       - name: Every job passed
