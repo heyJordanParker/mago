@@ -2047,8 +2047,8 @@ fn a_paradoxical_or_repeated_condition_names_its_php_sharp_types() {
     assert_eq!(
         conditions(("src/Demo/Report.sharp", sharp)),
         [
-            "8:17 paradoxical-condition Paradoxical condition | This condition (`!done && count is not 2`) can never be true here | Because of this preceding condition... | ...the analyzer knows that `count is 2 || done` must be true for this code path to be taken. | Therefore, this new condition (`!done && count is not 2`) directly contradicts that established fact. | As a result, the code this condition guards is unreachable. | Remove the unreachable code or refactor the conditional logic.",
-            "17:13 redundant-condition Redundant condition | This condition (`!done`) is always true here | This was already established as true by a previous condition here | The analyzer determined this condition is guaranteed to be true based on preceding logic, making this check unnecessary. | Consider removing this redundant conditional check to simplify the code.",
+            "8:17 paradoxical-condition Paradoxical condition | This condition (`!done && count is not 2`) can never be `true` here | Because of this preceding condition... | ...the analyzer knows that `count is 2 || done` must be `true` for this code path to be taken. | Therefore, this new condition (`!done && count is not 2`) directly contradicts that established fact. | As a result, the code this condition guards is unreachable. | Remove the unreachable code or refactor the conditional logic.",
+            "17:13 redundant-condition Redundant condition | This condition (`!done`) is always `true` here | This was already established as `true` by a previous condition here | The analyzer determined this condition is guaranteed to be `true` based on preceding logic, making this check unnecessary. | Consider removing this redundant conditional check to simplify the code.",
         ]
     );
     assert_eq!(
