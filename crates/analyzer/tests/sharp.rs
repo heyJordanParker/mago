@@ -3134,6 +3134,58 @@ fn numbers_strings_and_a_class_declaring_operator_spaceship_still_order() {
     assert_eq!(errors(("src/App/Ranking.sharp", sharp), &[MONEY_OPERATORS]), Vec::<String>::new());
 }
 
+/// `sortedBy` orders by the key its function returns, as `<=>` orders, so a key that holds a `bool`, an enum case, a
+/// collection or an instance of a class that declares no `operator <=>` is refused, as `<=>` refuses it. A `.php` call
+/// of the same method keeps PHP's report.
+#[test]
+fn sorted_by_a_key_with_no_order_is_refused() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Report\n{\n    public List<Status> a(List<Status> statuses) => statuses.sortedBy(s => s);\n\n    public List<bool> b(List<bool> flags) => flags.sortedBy(f => f);\n\n    public List<Row> c(List<Row> rows) => rows.sortedBy(r => r.tags);\n\n    public List<Cart> d(List<Cart> orders) => orders.sortedBy(o => o);\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Status;\nuse Sharp\\ListMethods;\n\nfinal class Report\n{\n    /**\n     * @param ListMethods<Status> $statuses\n     *\n     * @return list<Status>\n     */\n    public function a(ListMethods $statuses): array\n    {\n        return $statuses->sortedBy(fn (Status $s): Status => $s);\n    }\n}\n";
+    let row = "<?php\n\nnamespace Demo;\n\nfinal class Row\n{\n    /** @var list<string> */\n    public array $tags = [];\n}\n";
+    let others = [("src/Lib/Status.php", STATUS), ("src/Demo/Cart.php", CART), ("src/Demo/Row.php", row)];
+
+    assert_eq!(worded(("src/Demo/Report.php", php), &others), Vec::<String>::new());
+    assert_eq!(
+        worded(("src/Demo/Report.sharp", sharp), &others),
+        [
+            "7:71 invalid-argument `sortedBy` orders numbers, strings and classes that declare `operator <=>`, and `Status` is none of them. | This returns `Status`. | A `bool`, an enum case and a collection have no order. | Order a number or a string taken from the value instead.",
+            "9:61 invalid-argument `sortedBy` orders numbers, strings and classes that declare `operator <=>`, and `bool` is none of them. | This returns `bool`. | A `bool`, an enum case and a collection have no order. | Order a number or a string taken from the value instead.",
+            "11:57 invalid-argument `sortedBy` orders numbers, strings and classes that declare `operator <=>`, and `List<string>` is none of them. | This returns `List<string>`. | A `bool`, an enum case and a collection have no order. | Order a number or a string taken from the value instead.",
+            "13:63 invalid-argument `sortedBy` orders numbers, strings and classes that declare `operator <=>`, and `Cart` is none of them. | This returns `Cart`. | A class instance has an order only where its class declares `operator <=>`. | Order a number or a string taken from the value instead.",
+        ]
+    );
+}
+
+/// A `Map` and a `Set` order their values by `sortedBy` as a `List` does, and so does a list a chain of calls gives, so
+/// each refuses a key with no order.
+#[test]
+fn sorted_by_on_a_map_a_set_and_a_chain_refuses_a_key_with_no_order() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Report\n{\n    public List<Status> a(Map<string, Status> owners) => owners.sortedBy(s => s);\n\n    public List<Status> b(Set<Status> statuses) => statuses.sortedBy(s => s);\n\n    public List<Status> c(List<Status> statuses) => statuses.filter(s => s != Status.Closed).sortedBy(s => s);\n}\n";
+    let refused = "invalid-argument `sortedBy` orders numbers, strings and classes that declare `operator <=>`, and `Status` is none of them. | This returns `Status`. | A `bool`, an enum case and a collection have no order. | Order a number or a string taken from the value instead.";
+
+    assert_eq!(
+        worded(("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        [format!("7:74 {refused}"), format!("9:70 {refused}"), format!("11:103 {refused}")]
+    );
+}
+
+/// A loop body is analyzed more than once, and a `sortedBy` in it is refused once.
+#[test]
+fn sorted_by_in_a_loop_is_refused_once() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Report\n{\n    public int a(List<Status> statuses)\n    {\n        let total = 0;\n        while (total < 3) {\n            total += count(statuses.sortedBy(s => s));\n        }\n        return total;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", STATUS)]), ["11:46 invalid-argument"]);
+}
+
+/// `sortedBy` by a number, a string or an instance of a class that declares `operator <=>` still orders, and so does a
+/// key that may be `null`.
+#[test]
+fn sorted_by_a_number_a_string_or_a_class_declaring_operator_spaceship_still_orders() {
+    let sharp = "namespace App;\n\npublic class Ranking\n{\n    public List<int> a(List<int> numbers) => numbers.sortedBy(n => -n);\n\n    public List<float> b(List<float> ratios) => ratios.sortedBy(r => r);\n\n    public List<string> c(List<string> names) => names.sortedBy(n => n);\n\n    public List<int?> d(List<int?> counts) => counts.sortedBy(c => c);\n\n    public List<Money> e(List<Money> prices) => prices.sortedBy(p => p);\n}\n";
+
+    assert_eq!(errors(("src/App/Ranking.sharp", sharp), &[MONEY_OPERATORS]), Vec::<String>::new());
+}
+
 /// Spec section 19: `==` and `!=` on a nullable type are lifted, so null equals only null, and an `Any?` compares by
 /// value with a string or a number. None of them is an issue in PHP#, though PHP's loose `==` reports them.
 #[test]
