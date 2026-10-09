@@ -70,7 +70,7 @@ To get started with Mago and learn how to configure your project, please visit t
 
 ## Contributing
 
-Mago is a community-driven project, and we welcome contributions! Whether you're reporting bugs, suggesting features, writing documentation, or submitting code, your help is valued.
+Contributions are welcome.
 
 - See our [Contributing Guide](./CONTRIBUTING.md) to get started.
 
