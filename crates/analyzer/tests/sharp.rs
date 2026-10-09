@@ -2023,7 +2023,10 @@ fn a_fallback_on_a_missing_key_speaks_of_its_bool() {
     let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public static int missing() { const m = Store.shape(); return m[\"b\"] ?? 0; }\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Report\n{\n    public static function missing(): int { $m = Store::shape(); return $m['b'] ?? 0; }\n}\n";
     let checks = |analyzed| -> Vec<String> {
-        worded(analyzed, &[store]).into_iter().filter(|line| line.contains(" impossible-nonnull-entry-check ")).collect()
+        worded(analyzed, &[store])
+            .into_iter()
+            .filter(|line| line.contains(" impossible-nonnull-entry-check "))
+            .collect()
     };
 
     assert_eq!(
@@ -2045,7 +2048,8 @@ fn a_fallback_on_a_missing_key_speaks_of_its_bool() {
 /// pins the same report on an accessor.
 #[test]
 fn a_return_that_may_be_false_speaks_of_its_bool() {
-    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int position() { return strpos(\"ab\", \"b\"); }\n}\n";
+    let sharp =
+        "namespace Demo;\n\nclass Report\n{\n    public static int position() { return strpos(\"ab\", \"b\"); }\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function position(): int { return strpos('ab', 'b'); }\n}\n";
     let returns = |analyzed| -> Vec<String> {
         worded(analyzed, &[]).into_iter().filter(|line| line.contains(" falsable-return-statement ")).collect()

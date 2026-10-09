@@ -397,7 +397,8 @@ where
                     rhs_type,
                 ) {
                     if !block_context.flags.inside_loop_expressions() {
-                        let description = format!("always not equal to (always {} for !=)", display_bool(context, true));
+                        let description =
+                            format!("always not equal to (always {} for !=)", display_bool(context, true));
                         report_redundant_comparison(context, artifacts, binary, &description, "`true`");
                     }
 
@@ -621,7 +622,9 @@ fn check_comparison_operand<'ast, 'arena, A>(
         let rules = if context.dialect.is_sharp() {
             "PHP compares `false` with other types according to specific rules (e.g., `false < 1` is `true`). This can hide bugs.".to_owned()
         } else {
-            format!("PHP compares `false` with other types according to specific rules (e.g., `false == 0` is true using `{op_str}`). This can hide bugs.")
+            format!(
+                "PHP compares `false` with other types according to specific rules (e.g., `false == 0` is true using `{op_str}`). This can hide bugs."
+            )
         };
         context.collector.report_with_code(
             IssueCode::FalseOperand,

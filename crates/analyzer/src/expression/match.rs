@@ -504,8 +504,7 @@ where
                 }
                 ArmExecutionStatus::Always
             } else if condition_type.is_always_falsy() {
-                let note =
-                    format!("The condition is always {} in this context.", display_bool(self.context, false));
+                let note = format!("The condition is always {} in this context.", display_bool(self.context, false));
                 self.report_unreachable_arm(expression_arm, &note);
                 ArmExecutionStatus::Never
             } else {

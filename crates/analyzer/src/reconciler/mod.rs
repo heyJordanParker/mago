@@ -1610,7 +1610,7 @@ fn report_redundant_issue<A>(
             IssueCode::RedundantIssetCheck,
             "is always considered set (not null)".to_owned(),
             format!("Variable {subject_desc} is already known to be non-null, making the `isset()` check redundant."),
-            "Remove the redundant `isset()` check.".to_owned()
+            "Remove the redundant `isset()` check.".to_owned(),
         ),
         Assertion::Truthy => (
             IssueCode::RedundantCondition,
@@ -1618,9 +1618,11 @@ fn report_redundant_issue<A>(
             if sharp {
                 format!("Variable {subject_desc} is never `false`, so this condition is always `true`.")
             } else {
-                format!("Variable {subject_desc} is always truthy. This condition is redundant and the code block will always execute if reached.")
+                format!(
+                    "Variable {subject_desc} is always truthy. This condition is redundant and the code block will always execute if reached."
+                )
             },
-            "Simplify or remove the redundant condition if the guarded code should always run.".to_owned()
+            "Simplify or remove the redundant condition if the guarded code should always run.".to_owned(),
         ),
         Assertion::Falsy => (
             IssueCode::RedundantCondition,
@@ -1628,45 +1630,59 @@ fn report_redundant_issue<A>(
             if sharp {
                 format!("Variable {subject_desc} is never `true`, so this condition is always `true`.")
             } else {
-                format!("Variable {subject_desc} is always falsy, so asserting it's falsy is always true and redundant.")
+                format!(
+                    "Variable {subject_desc} is always falsy, so asserting it's falsy is always true and redundant."
+                )
             },
-            "Simplify or remove the redundant condition if the guarded code should always run.".to_owned()
+            "Simplify or remove the redundant condition if the guarded code should always run.".to_owned(),
         ),
         Assertion::HasArrayKey(array_key_assertion) => (
             IssueCode::RedundantKeyCheck,
             format!("will always have the key `{array_key_assertion}`"),
-            format!("Variable {subject_desc} is known to always contain the key `{array_key_assertion}`. This check is redundant."),
-            "Remove the redundant `array_key_exists()` or key check.".to_owned()
+            format!(
+                "Variable {subject_desc} is known to always contain the key `{array_key_assertion}`. This check is redundant."
+            ),
+            "Remove the redundant `array_key_exists()` or key check.".to_owned(),
         ),
         Assertion::DoesNotHaveArrayKey(array_key_assertion) => (
             IssueCode::RedundantKeyCheck,
             format!("will never have the key `{array_key_assertion}`"),
-            format!("Variable {subject_desc} is known to never contain the key `{array_key_assertion}`. This negative check is redundant."),
-            "Remove the redundant negative key check.".to_owned()
+            format!(
+                "Variable {subject_desc} is known to never contain the key `{array_key_assertion}`. This negative check is redundant."
+            ),
+            "Remove the redundant negative key check.".to_owned(),
         ),
         Assertion::HasNonnullEntryForKey(dict_key_name) => (
             IssueCode::RedundantNonnullEntryCheck,
             format!("will always have a non-null entry for key `{dict_key_name}`"),
-            format!("Variable {subject_desc} is known to always have a non-null value for key `{dict_key_name}`. This `!empty()` style check is redundant."),
-            "Remove the redundant non-null entry check.".to_owned()
+            format!(
+                "Variable {subject_desc} is known to always have a non-null value for key `{dict_key_name}`. This `!empty()` style check is redundant."
+            ),
+            "Remove the redundant non-null entry check.".to_owned(),
         ),
         Assertion::IsType(TAtomic::Mixed(mixed)) if mixed.is_non_null() => (
             IssueCode::RedundantNonnullTypeComparison,
             "is already known to be non-null".to_owned(),
             format!("Variable {subject_desc} is already non-null. Checking against `mixed (not null)` is redundant."),
-            "Remove the redundant non-null check.".to_owned()
+            "Remove the redundant non-null check.".to_owned(),
         ),
         Assertion::IsNotType(TAtomic::Mixed(mixed)) if mixed.is_non_null() => (
             IssueCode::RedundantTypeComparison,
             "comparison with `mixed (not null)` is redundant".to_owned(),
-            format!("The check against `mixed (not null)` for variable {subject_desc} might be overly broad or redundant depending on context."),
-            "Verify if a more specific type check is needed.".to_owned()
+            format!(
+                "The check against `mixed (not null)` for variable {subject_desc} might be overly broad or redundant depending on context."
+            ),
+            "Verify if a more specific type check is needed.".to_owned(),
         ),
         _ => (
             IssueCode::RedundantTypeComparison,
             format!("is already known to be `{assertion_atom}`"),
-            format!("The type of variable {subject_desc} already satisfies the condition that it is `{assertion_atom}`. This check is redundant."),
-            format!("This condition is always {always} and the associated code block will always execute if reached. Consider simplifying.")
+            format!(
+                "The type of variable {subject_desc} already satisfies the condition that it is `{assertion_atom}`. This check is redundant."
+            ),
+            format!(
+                "This condition is always {always} and the associated code block will always execute if reached. Consider simplifying."
+            ),
         ),
     };
 

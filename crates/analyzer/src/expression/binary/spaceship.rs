@@ -214,12 +214,10 @@ fn check_spaceship_operand<'arena, A>(
         };
         context.collector.report_with_code(
             IssueCode::FalseOperand,
-            Issue::error(format!(
-                "{side} operand in spaceship comparison (`<=>`) is `false`."
-            ))
-            .with_annotation(Annotation::primary(operand.span()).with_message("This is `false`"))
-            .with_note(rules)
-            .with_help("Ensure this comparison with `false` is intended, or provide a non-false operand."),
+            Issue::error(format!("{side} operand in spaceship comparison (`<=>`) is `false`."))
+                .with_annotation(Annotation::primary(operand.span()).with_message("This is `false`"))
+                .with_note(rules)
+                .with_help("Ensure this comparison with `false` is intended, or provide a non-false operand."),
         );
     } else if operand_type.is_falsable() && !operand_type.ignore_falsable_issues() {
         context.collector.report_with_code(

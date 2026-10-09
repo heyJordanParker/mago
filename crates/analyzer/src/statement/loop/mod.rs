@@ -203,8 +203,9 @@ where
                 IssueCode::ImpossibleCondition,
                 Issue::warning(format!("This loop condition (type `{type_id}`) will always evaluate to {value}."))
                     .with_annotation(
-                        Annotation::primary(condition.span())
-                            .with_message(format!("This condition is always {value}, the loop body will never execute")),
+                        Annotation::primary(condition.span()).with_message(format!(
+                            "This condition is always {value}, the loop body will never execute"
+                        )),
                     )
                     .with_help("Check the logic of this loop condition. The loop body is unreachable."),
             );
