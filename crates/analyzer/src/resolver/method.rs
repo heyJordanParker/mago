@@ -1154,6 +1154,8 @@ where
 /// storage of the property whose accessor is running. A PHP# collection is the `List` or `Map` its place declares, so
 /// its methods, its index reads and its `[k, v]` loops follow that type. A value the analyzer saw assigned last, such
 /// as a list of one implementation, or a `List` literal in a `Map<int, V>`, narrows neither its kind nor its elements.
+/// Only a property a PHP# class declares names a collection: a plain PHP `array` property, on a PHP class or reached
+/// through a PHP# one, is typed by the value it holds, as in PHP.
 pub(crate) fn get_declared_collection<'arena, A>(
     context: &Context<'_, 'arena, A>,
     block_context: &BlockContext<'_>,
@@ -1192,7 +1194,12 @@ where
                 return None;
             };
             let property_name = concat_word!(b"$", property.value);
-            let property_type = |class: &[u8]| context.codebase.get_property_type(class, property_name.as_bytes());
+            let property_type = |class: &[u8]| {
+                let declaring_class = context.codebase.get_declaring_property_class(class, property_name.as_bytes())?;
+                let is_sharp = context.codebase.get_class_like(declaring_class.as_bytes())?.flags.is_sharp();
+
+                is_sharp.then(|| context.codebase.get_property_type(class, property_name.as_bytes()))?
+            };
 
             // `Class.name` is a static property of the class it names, and `this` keeps no expression type: its
             // class is the scope's.
