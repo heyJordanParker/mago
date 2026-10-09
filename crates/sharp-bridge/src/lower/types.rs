@@ -114,7 +114,9 @@ impl<'analysis> Types<'analysis> {
     }
 
     /// The bounds of the fully qualified class name `class` when it is a PHP# generic class, whose objects carry their
-    /// type arguments: the [`type_text`] of each type parameter's bound in declaration order, joined by `, `.
+    /// type arguments: the [`type_text`] of each type parameter's bound in declaration order, joined by `, `. They are
+    /// the type arguments of an object plain PHP creates, so a bound that names a type parameter of the class writes it
+    /// as `Any?`: `Comparable<Any?>` for `Sorted<TItem : Comparable<TItem>>`.
     pub(crate) fn bounds(&self, class: &[u8]) -> Option<String> {
         let metadata = self.codebase.get_class_like(class)?;
         if !metadata.flags.is_sharp() || metadata.template_types.is_empty() {
@@ -510,8 +512,9 @@ pub(crate) fn agreed_kind(mut kinds: impl Iterator<Item = DeclarationKind>) -> D
 /// How a type text writes a type parameter.
 #[derive(Clone, Copy)]
 enum Parameter {
-    /// By its name.
-    Name,
+    /// As `Any?`, which stands in for a type parameter no type argument is given for, as in a bound that names a
+    /// type parameter of its own class: `Comparable<Any?>` for `TItem : Comparable<TItem>`.
+    Any,
     /// A class's as `$` and its index among its class's type parameters, `$0` for the first, and a method's as `#` and
     /// its index among the method's.
     Index,
@@ -521,11 +524,11 @@ enum Parameter {
 
 /// `r#type` in the one PHP# spelling the engine parses, task 090's type text: a class by its full dotted name as it is
 /// declared, the built-in types, `List<T>`, `Map<K, V>`, `Iterable<T>`, `Class<T>`, `Function<R(P1, P2)>`, a type
-/// parameter by its name, `T?`, `(A|B)?`, `A & B`, and an intersection in parentheses inside a union or a nullable
-/// type, `(A & B)|C` and `(A & B)?`. Union and intersection members are sorted by their text, and a space comes only
-/// after a comma and around `&`.
+/// parameter as `Any?`, `T?`, `(A|B)?`, `A & B`, and an intersection in parentheses inside a union or a nullable type,
+/// `(A & B)|C` and `(A & B)?`. Union and intersection members are sorted by their text, and a space comes only after a
+/// comma and around `&`.
 pub(crate) fn type_text(r#type: &TUnion, codebase: &CodebaseMetadata) -> String {
-    text(r#type, codebase, Parameter::Name)
+    text(r#type, codebase, Parameter::Any)
 }
 
 /// [`type_text`], with each type parameter of a class written as `parameter` says.
@@ -574,7 +577,7 @@ fn atomic_text(atomic: &TAtomic, codebase: &CodebaseMetadata, parameter: Paramet
     let list = |types: &mut dyn Iterator<Item = &TUnion>| types.map(type_text).collect::<Vec<_>>().join(", ");
     let parameter_text =
         |name: Word, defining_entity: GenericParent, bound: &dyn Fn() -> String| match (parameter, defining_entity) {
-            (Parameter::Name, _) => name.to_string(),
+            (Parameter::Any, _) => "Any?".to_owned(),
             (Parameter::Index | Parameter::Bound, GenericParent::ClassLike(class)) => {
                 let index = codebase
                     .get_class_like(class.as_bytes())
@@ -779,7 +782,7 @@ mod tests {
     }
 
     #[test]
-    fn a_type_parameter_is_its_name_and_a_class_value_names_its_class() {
+    fn a_type_parameter_is_any_and_a_class_value_names_its_class() {
         let parameter = TGenericParameter::new(
             word("TItem"),
             Arc::new(get_mixed()),
@@ -787,7 +790,7 @@ mod tests {
         );
         let class_value = TClassLikeString::literal(word("App\\Order"));
 
-        assert_eq!(text(&wrap_atomic(TAtomic::GenericParameter(parameter))), "TItem");
+        assert_eq!(text(&wrap_atomic(TAtomic::GenericParameter(parameter))), "Any?");
         assert_eq!(text(&wrap_atomic(TAtomic::Scalar(TScalar::ClassLikeString(class_value)))), "Class<App.Order>");
     }
 }

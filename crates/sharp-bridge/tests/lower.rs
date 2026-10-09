@@ -3109,6 +3109,41 @@ fn a_class_like_metadata_holds_its_header_type_arguments_and_its_bounds() {
     );
 }
 
+/// A bound that names a type parameter of its own class writes it as `Any?`: the bounds are the type arguments of an
+/// object plain PHP creates, which has no type argument to give it, and a text that names one would be open.
+#[test]
+fn a_bound_writes_a_type_parameter_of_its_own_class_as_any() {
+    let lowered = Lowered::with(
+        indoc! {"
+        namespace Demo;
+
+        public interface Comparable<T>
+        {
+        }
+
+        public class Sorted<TItem : Comparable<TItem>>
+        {
+        }
+
+        public class Ranked<TKey, TItem : Comparable<TKey>>
+        {
+        }
+    "},
+        &[],
+    );
+    let bounds = |class: u32| {
+        let members = lowered.child(lowered.child(lowered.root(), class), 2);
+        let metadata = lowered.child(members, lowered.nodes()[members as usize].child_count - 1);
+
+        lowered.render(lowered.child(metadata, 1))
+    };
+
+    assert_eq!(
+        [bounds(3), bounds(4)],
+        ["ZVAL \"Demo.Comparable<Any?>\"\n", "ZVAL \"Any?, Demo.Comparable<Any?>\"\n"]
+    );
+}
+
 /// A call of a generic method carries the type arguments the checker found, written or inferred, as the last child of
 /// its argument list: a `SHARP_TYPE_ARGS` without a `new`. A type parameter of the class the call is in is `$` and its
 /// index, and one of the method the call is in is `#` and its index, which the engine reads from the method's own
