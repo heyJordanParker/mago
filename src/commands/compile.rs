@@ -27,6 +27,7 @@ use mago_reporting::reporter::ReporterConfig;
 use mago_server::Server;
 use mago_sharp_bridge::unit;
 use mago_sharp_lean::Lean;
+use mago_sharp_lean::PACKAGE_FOLDER;
 use mago_syntax::dialect::Dialect;
 
 use crate::commands::analyze::analyze_the_whole_workspace_without_paths;
@@ -39,9 +40,6 @@ use crate::consts::PRELUDE_BYTES;
 use crate::error::Error;
 use crate::extensions::start_external_analyzer;
 use crate::utils::create_orchestrator;
-
-/// The folder in the `.sharp` folder that holds the Lean package of the project's laws.
-const LEAN_FOLDER: &str = ".lean";
 
 /// The folder Composer installs packages into.
 const VENDOR: &[u8] = b"vendor/";
@@ -132,7 +130,7 @@ impl CompileCommand {
 
         let compiled_folder = root.join(unit::COMPILED_FOLDER);
         if compiled_folder.is_dir() {
-            delete_all_but(&compiled_folder, &written, &compiled_folder.join(LEAN_FOLDER))
+            delete_all_but(&compiled_folder, &written, &compiled_folder.join(PACKAGE_FOLDER))
                 .map_err(DatabaseError::from)?;
         }
 

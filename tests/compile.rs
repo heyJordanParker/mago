@@ -7,6 +7,7 @@ use std::process::Output;
 
 use mago_sharp_bridge::unit::header;
 use mago_sharp_bridge::unit::source_hash;
+use mago_sharp_lean::PACKAGE_FOLDER;
 
 const ORDER: &str = "namespace App;\n\npublic class Order\n{\n    public int total(int extra)\n    {\n        return extra + 1;\n    }\n}\n";
 const BROKEN_ORDER: &str = "namespace App;\n\npublic class Order\n{\n    public int total(int extra)\n    {\n        return \"one\";\n    }\n}\n";
@@ -292,6 +293,7 @@ fn compile_proves_a_law_with_the_proof_it_creates_and_writes_the_compiled_file()
     assert!(output.status.success(), "{}", printed(&output));
     assert_eq!(read(root, "app/Shared/Money.lean"), MONEY_PROOF);
     assert!(compiled(root, "app/Shared/Money.sharp").exists());
+    assert!(root.join(".sharp").join(PACKAGE_FOLDER).is_dir(), "the compile keeps the Lake package's folder");
     assert!(root.join(".sharp/.lean/Code/App/Shared/Money.lean").exists(), "the Lake package stays in .sharp/.lean/");
 }
 

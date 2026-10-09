@@ -14,6 +14,7 @@ mod translate;
 
 pub use lean::Lean;
 pub use lean::proof_file;
+pub use package::PACKAGE_FOLDER;
 pub use reach::Reach;
 pub use translate::Translation;
 pub use translate::translate;

@@ -26,6 +26,9 @@ use crate::translate::Translation;
 use crate::translate::Unmodeled;
 use crate::translate::Use;
 
+/// The folder in the `.sharp` folder that holds the Lake package of the project's laws.
+pub const PACKAGE_FOLDER: &str = ".lean";
+
 /// Every declaration of every translation, indexed by its Lean name.
 pub(crate) struct Program<'program> {
     translations: &'program [Translation],
@@ -388,7 +391,7 @@ impl Package {
     /// The package of the workspace at `root`, in `.sharp/.lean/` apart from the `.sharpc` mirror of the sources. The
     /// folder is joined one name at a time, since `cmd` reads a `/` in a Windows path as a switch.
     pub(crate) fn new(root: &Path) -> Self {
-        Self { directory: plain(root).join(COMPILED_FOLDER).join(".lean") }
+        Self { directory: plain(root).join(COMPILED_FOLDER).join(PACKAGE_FOLDER) }
     }
 
     /// Writes the package's Lean version, so elan installs it on first use, and asks `lake` for its version there.
