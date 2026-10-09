@@ -1,4 +1,5 @@
 use std::cell::OnceCell;
+use std::sync::Arc;
 
 use foldhash::HashMap;
 use mago_allocator::Arena;
@@ -63,10 +64,12 @@ where
     pub(super) type_resolution_context: TypeResolutionContext,
     pub(super) comments: &'arena [Trivia<'arena>],
     pub(super) settings: &'ctx Settings,
-    pub(super) scope: NamespaceScope,
+    /// The file's namespace and imports. It is shared with the effect summaries of the file's bodies, which name classes
+    /// as the file does, so a change after a body copies it once.
+    pub(super) scope: Arc<NamespaceScope>,
     /// The name each import of a `.sharp` file gives its class, as the file writes it: the name after `as`, or else the
-    /// last segment of the class name. Keyed by the lowercase full name of the class.
-    pub(super) imported_names: WordMap<Word>,
+    /// last segment of the class name. Keyed by the lowercase full name of the class. Shared as `scope` is.
+    pub(super) imported_names: Arc<WordMap<Word>>,
     pub(super) collector: Collector<'ctx, 'arena, A>,
     pub(super) statement_span: Span,
     pub(super) plugin_registry: &'ctx PluginRegistry,
@@ -109,8 +112,8 @@ where
             type_resolution_context: TypeResolutionContext::new(),
             comments,
             settings,
-            scope: NamespaceScope::default(),
-            imported_names: WordMap::default(),
+            scope: Arc::default(),
+            imported_names: Arc::default(),
             statement_span,
             collector,
             plugin_registry,

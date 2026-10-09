@@ -1,5 +1,7 @@
 //! Records a PHP# body's [`EffectSummary`] from its syntax, after the analysis has resolved its calls.
 
+use std::sync::Arc;
+
 use foldhash::HashMap;
 use mago_allocator::Arena;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
@@ -68,6 +70,18 @@ pub(crate) fn record<'arena, A>(
         Body::Method(class, _) | Body::Accessor(class, _, _) => class,
     };
 
+    let imports = Arc::clone(&context.imported_names);
+    let scope = Arc::clone(&context.scope);
+    let empty_summary = || EffectSummary {
+        body,
+        member,
+        effects: Vec::new(),
+        calls: Vec::new(),
+        changes: Vec::new(),
+        imports: Arc::clone(&imports),
+        scope: Arc::clone(&scope),
+    };
+
     let mut recorder = Recorder {
         context,
         artifacts,
@@ -78,14 +92,14 @@ pub(crate) fn record<'arena, A>(
         subjects: Vec::new(),
         inlining: Vec::new(),
         grew: false,
-        summary: empty_summary(context, body, member),
+        summary: empty_summary(),
     };
 
     // A local takes the roots of every value assigned to it anywhere in the body, so the walk repeats until no
     // local gains a root, and the last walk records with every local's roots known.
     loop {
         recorder.grew = false;
-        recorder.summary = empty_summary(context, body, member);
+        recorder.summary = empty_summary();
         match code {
             FunctionLikeBody::Statements(statements, _) => {
                 for statement in statements {
@@ -104,20 +118,6 @@ pub(crate) fn record<'arena, A>(
 
     let summary = recorder.summary;
     artifacts.effect_summaries.push(summary);
-}
-
-fn empty_summary<A>(context: &Context<'_, '_, A>, body: Body, member: Word) -> EffectSummary
-where
-    A: Arena,
-{
-    EffectSummary {
-        body,
-        member,
-        effects: Vec::new(),
-        calls: Vec::new(),
-        changes: Vec::new(),
-        imports: context.imported_names.clone(),
-    }
 }
 
 /// The state of one body's walk.

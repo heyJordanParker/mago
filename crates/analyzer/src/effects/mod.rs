@@ -6,11 +6,13 @@
 
 use std::cell::OnceCell;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use foldhash::HashMap;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_names::display_sharp_member;
+use mago_names::scope::NamespaceScope;
 use mago_reporting::IssueCollection;
 use mago_span::Span;
 use mago_word::Word;
@@ -81,9 +83,11 @@ pub struct EffectSummary {
     pub(crate) calls: Vec<Call>,
     /// Each change, with the write and the place written as the source writes it.
     pub(crate) changes: Vec<(Changed, Span, Word)>,
-    /// The name each import of the body's file gives its class, as `Context::imported_names` holds them, so a message
-    /// about the body names classes as its file does.
-    pub(crate) imports: WordMap<Word>,
+    /// The name each import of the body's file gives its class, and the file's namespace and imports, as
+    /// `Context::imported_names` and `Context::scope` hold them, shared by the file's bodies. A message about the body
+    /// names classes, and the imports its code needs, as its file does.
+    pub(crate) imports: Arc<WordMap<Word>>,
+    pub(crate) scope: Arc<NamespaceScope>,
 }
 
 /// Why a body is impure, as the first call or write in it that leads there. Each name is a full class name and a
@@ -156,8 +160,9 @@ pub struct Effects {
     bodies: Vec<Body>,
     /// Each body's lowercase class name and its member as messages name it.
     names: Vec<(Word, Word)>,
-    /// The imports of each body's file, which name the classes of a message about the body.
-    imports: Vec<WordMap<Word>>,
+    /// The imports and the scope of each body's file, which name the classes of a message about the body.
+    imports: Vec<Arc<WordMap<Word>>>,
+    scopes: Vec<Arc<NamespaceScope>>,
     index: HashMap<Body, usize>,
     /// Each body's items, its own in source order first, and each once.
     solved: Vec<Vec<(Item, Origin)>>,
@@ -252,7 +257,8 @@ impl Effects {
                     Body::Method(class, _) | Body::Accessor(class, _, _) => (class, summary.member),
                 })
                 .collect(),
-            imports: summaries.iter().map(|summary| summary.imports.clone()).collect(),
+            imports: summaries.iter().map(|summary| Arc::clone(&summary.imports)).collect(),
+            scopes: summaries.iter().map(|summary| Arc::clone(&summary.scope)).collect(),
             index,
             solved,
         }
@@ -317,12 +323,13 @@ impl Effects {
         Some(Impurity { span, path, cause: origin.cause, effect })
     }
 
-    /// Each body with its member as messages name it, the imports of its file, and why it is impure.
-    fn impure_bodies(&self) -> impl Iterator<Item = (Body, Word, &WordMap<Word>, Impurity)> + '_ {
+    /// Each body with its member as messages name it, the imports and the scope of its file, and why it is impure.
+    fn impure_bodies(&self) -> impl Iterator<Item = (Body, Word, &WordMap<Word>, &NamespaceScope, Impurity)> + '_ {
         self.bodies.iter().enumerate().filter(|(position, body)| self.index.get(body) == Some(position)).filter_map(
             |(position, body)| {
-                self.body_impurity(*body)
-                    .map(|impurity| (*body, self.names[position].1, &self.imports[position], impurity))
+                self.body_impurity(*body).map(|impurity| {
+                    (*body, self.names[position].1, &*self.imports[position], &*self.scopes[position], impurity)
+                })
             },
         )
     }

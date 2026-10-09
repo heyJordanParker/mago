@@ -17,6 +17,7 @@ use mago_codex::ttype::get_array_parameters;
 use mago_codex::ttype::union::TUnion;
 use mago_names::display_sharp_member;
 use mago_names::kind::NameKind;
+use mago_names::scope::NamespaceScope;
 use mago_names::short_name;
 use mago_syntax_core::utils::is_part_of_identifier;
 use mago_word::Word;
@@ -88,10 +89,8 @@ fn shares_short_name(
     counts.get(&short_name(name).to_ascii_lowercase()).is_some_and(|count| *count > 1)
 }
 
-/// Returns the sentence that names the `import` lines a `.sharp` file needs before code that names `class_names` by
-/// their short names compiles, as `Add `import Sharp.Text.Regex;` to the file.`: one line for each class-like the file
-/// doesn't [bind](binds_class_like), once each, in the order given. Returns `None` when the file binds them all, and in
-/// a PHP file.
+/// Returns the sentence that names the `import` lines the analyzed file needs, as [`sharp_missing_imports`] writes it,
+/// or `None` in a PHP file.
 pub(crate) fn display_missing_imports<A>(
     context: &Context<'_, '_, A>,
     class_names: impl IntoIterator<Item = Word>,
@@ -103,14 +102,27 @@ where
         return None;
     }
 
+    sharp_missing_imports(context.codebase, &context.imported_names, &context.scope, class_names)
+}
+
+/// Returns the sentence that names the `import` lines a `.sharp` file, with the `imported_names` and `scope` of its
+/// imports and namespace, needs before code that names `class_names` by their short names compiles, as
+/// `Add `import Sharp.Text.Regex;` to the file.`: one line for each class-like the file doesn't
+/// [bind](binds_class_like), once each, in the order given. Returns `None` when the file binds them all.
+pub(crate) fn sharp_missing_imports(
+    codebase: &CodebaseMetadata,
+    imported_names: &WordMap<Word>,
+    scope: &NamespaceScope,
+    class_names: impl IntoIterator<Item = Word>,
+) -> Option<String> {
     let mut imports: Vec<String> = Vec::new();
     for class_name in class_names {
-        let name = context.codebase.get_class_like(class_name.as_bytes()).map_or(class_name, |m| m.original_name);
+        let name = codebase.get_class_like(class_name.as_bytes()).map_or(class_name, |m| m.original_name);
         let import = format!(
             "`import {};`",
             String::from_utf8_lossy(mago_bytes::trim_start_byte(name.as_bytes(), b'\\')).replace('\\', ".")
         );
-        if !binds_class_like(context, name) && !imports.contains(&import) {
+        if !binds_class_like(imported_names, scope, name) && !imports.contains(&import) {
             imports.push(import);
         }
     }
@@ -121,19 +133,17 @@ where
     Some(format!("Add {imports} to the file."))
 }
 
-/// Whether the analyzed file binds a name to the class-like `name`, as spec section 23 binds a name: by an import, under
-/// its short name or the name after `as`, by declaring it, or by sharing its namespace. A class-like directly in `Sharp`
-/// is imported by default, unless the file imports or declares another class-like of its short name.
-fn binds_class_like<A>(context: &Context<'_, '_, A>, name: Word) -> bool
-where
-    A: Arena,
-{
+/// Whether a `.sharp` file with the `imported_names` and `scope` of its imports and namespace binds a name to the
+/// class-like `name`, as spec section 23 binds a name: by an import, under its short name or the name after `as`, by
+/// declaring it, or by sharing its namespace. A class-like directly in `Sharp` is imported by default, unless the file
+/// imports or declares another class-like of its short name.
+fn binds_class_like(imported_names: &WordMap<Word>, scope: &NamespaceScope, name: Word) -> bool {
     let name = mago_bytes::trim_start_byte(name.as_bytes(), b'\\');
-    if context.imported_names.contains_key(&ascii_lowercase_word(name)) {
+    if imported_names.contains_key(&ascii_lowercase_word(name)) {
         return true;
     }
 
-    let (bound, imported) = context.scope.resolve(NameKind::Default, short_name(name));
+    let (bound, imported) = scope.resolve(NameKind::Default, short_name(name));
     if bound.eq_ignore_ascii_case(name) {
         return true;
     }

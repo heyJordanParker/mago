@@ -156,7 +156,7 @@ where
         return Ok(None);
     }
 
-    let scope = context.scope.clone();
+    let scope = Arc::clone(&context.scope);
     let mut static_local_types = WordMap::default();
     let mut previous_types = WordMap::default();
     for _ in 0..8 {
