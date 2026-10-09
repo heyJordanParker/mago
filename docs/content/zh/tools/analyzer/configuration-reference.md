@@ -77,7 +77,7 @@ glob 匹配会遵循 `[source.glob]` 下的项目级设置,因此像 `literal-se
 | :--- | :--- | :--- |
 | `find-unused-expressions` | `true` | 报告其结果被丢弃的表达式,例如 `$a + $b;`。 |
 | `find-unused-definitions` | `true` | 报告从未被引用的私有定义。 |
-| `find-overly-wide-return-types` | `false` | 当声明的返回类型包含主体永远不会产生的分支时发出警告,例如总是返回字符串的函数声明为 `: string\|false`。自 1.20.0 起可用。 |
+| `find-overly-wide-return-types` | `false` | 当声明的返回类型包含主体永远不会产生的分支时发出警告,例如总是返回字符串的函数声明为 `: string\|false`。 |
 | `analyze-dead-code` | `false` | 分析看似不可达的代码。 |
 | `memoize-properties` | `true` | 跟踪字面量属性值以获得更精准的推断,代价是占用一些额外内存。 |
 | `allow-possibly-undefined-array-keys` | `true` | **已弃用。**允许访问可能不存在的键,而不报告。设为 `false` 时仅对带有单个字面量键的 `array<K, V>` 读取发出警告,且不会将类型扩展为 `T\|null`。请改用 `strict-array-index-existence`。 |
@@ -99,7 +99,7 @@ glob 匹配会遵循 `[source.glob]` 下的项目级设置,因此像 `literal-se
 | `check-name-casing` | `false` | 报告引用类、函数等时的大小写错误。有助于防止在区分大小写的文件系统上自动加载失败。 |
 | `enforce-class-finality` | `false` | 报告未声明为 `final` 或 `abstract`、未注解 `@api`、且没有子类的类。 |
 | `require-api-or-internal` | `false` | 要求抽象类、接口和 trait 必须以 `@api` 或 `@internal` 注解。 |
-| `check-experimental` | `false` | 报告在非实验性上下文中使用 `@experimental` 符号的情况。自 1.19.0 起可用。 |
+| `check-experimental` | `false` | 报告在非实验性上下文中使用 `@experimental` 符号的情况。 |
 | `allow-side-effects-in-conditions` | `true` | 设为 `false` 时,报告在 `if`、`while`、`for`、三元或 `match` 条件中调用非纯函数的情况。 |
 
 ## 属性初始化

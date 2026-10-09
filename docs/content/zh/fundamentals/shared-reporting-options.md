@@ -70,8 +70,6 @@ mago analyze --retain-code invalid-argument --retain-code type-mismatch
 
 因此 CI 流水线得到原生注解,AI 助手得到一种节省 token 的格式,不需要任何配置。显式传入 `--reporting-format` 可覆盖。
 
-> 自动检测自 Mago 1.18 起可用。在 1.17 及更早版本中,请显式设置 `--reporting-format=github` 或 `--reporting-format=gitlab`。
-
 ## Baseline
 
 用于管理 baseline 文件的参数。完整指南在 [baseline 页面](/fundamentals/baseline/)。

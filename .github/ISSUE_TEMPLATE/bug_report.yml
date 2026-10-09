@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Please provide a clear description and reproduction steps. For analyzer or linter issues, use the [Playground](https://mago.carthage.software/playground) to create a shareable reproduction link.
+        Please provide a clear description and reproduction steps.
 
   - type: textarea
     id: description
@@ -17,20 +17,11 @@ body:
     validations:
       required: true
 
-  - type: input
-    id: playground
-    attributes:
-      label: "Playground Link"
-      description: "Share a [Playground](https://mago.carthage.software/playground) link that reproduces the issue (if applicable)."
-      placeholder: "https://mago.carthage.software/playground#..."
-    validations:
-      required: false
-
   - type: textarea
     id: reproduction
     attributes:
       label: "Reproduction"
-      description: "If playground doesn't apply (e.g., formatter, CLI, or config-specific issues), provide steps and code to reproduce."
+      description: "Provide the steps and code that reproduce the issue."
       placeholder: |
         1. Create a file with...
         2. Run `mago lint`...
@@ -43,8 +34,8 @@ body:
       label: "Environment"
       description: "Mago version, OS, and installation method."
       placeholder: |
-        - Mago: 1.y.z-rc.2
+        - mago-sharp: 0.y.z
         - OS: macOS / Linux / Windows
-        - Installed via: Homebrew / Cargo / Composer
+        - Installed via: install script / Composer / Nix
     validations:
       required: true

@@ -8,12 +8,30 @@ nav_section = "Extensions"
 
 This guide uses Mago's bundled PHP SDK to create an extension containing one linter rule that reports `eval` expressions. Extensions may use another language by implementing the same worker protocol.
 
-For a ready-to-customize PHP project, start with the [Mago extension template](https://github.com/carthage-software/mago-extension-template). It includes an extension factory, linter and analyzer examples, corpus tests, PHPUnit tests, Mago configuration, and CI. Clone it, replace the `Acme` placeholders, and use the walkthrough below to understand each component.
+Start from a plain Composer package that requires `heyjordanparker/mago-sharp` and maps the `Acme\Mago\` namespace to `src/Mago/`:
+
+```json
+{
+  "name": "acme/mago-extension",
+  "type": "library",
+  "require": {
+    "php": "^8.1",
+    "heyjordanparker/mago-sharp": "^0.2"
+  },
+  "autoload": {
+    "psr-4": {
+      "Acme\\Mago\\": "src/Mago/"
+    }
+  }
+}
+```
+
+[Packaging and compatibility](/extensions/development/packaging-and-compatibility/) explains this layout and the version constraint.
 
 ## Requirements
 
 - A Composer project using `heyjordanparker/mago-sharp`.
-- A PHP version allowed by the installed Mago package. Mago 1.47 supports PHP 8.1 through PHP 8.6.
+- A PHP version allowed by the installed `heyjordanparker/mago-sharp` package, PHP 8.1 through PHP 8.6.
 - A Mago configuration file in the project root.
 
 The Mago Composer package contains both the executable installer and the version-matched PHP SDK, so extension packages should use it as their SDK dependency.
