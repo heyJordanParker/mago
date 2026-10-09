@@ -6112,6 +6112,88 @@ fn a_getter_calling_a_function_with_no_extern_is_refused_and_names_the_missing_d
     );
 }
 
+const MAGIC: (&str, &str) = (
+    "src/Lib/Magic.php",
+    "<?php\n\nnamespace Lib;\n\nfinal class Bag\n{\n    /** @param list<mixed> $arguments */\n    public function __call(string $name, array $arguments): int\n    {\n        return 0;\n    }\n}\n\nfinal class Codes\n{\n    /** @param list<mixed> $arguments */\n    public static function __callStatic(string $name, array $arguments): int\n    {\n        return 0;\n    }\n}\n",
+);
+
+const SHELF: (&str, &str) = (
+    "app/Shop/Shelf.sharp",
+    "namespace App.Shop;\n\nimport Lib.Bag;\nimport Lib.Codes;\n\npublic class Shelf\n{\n    public Shelf(private Bag bag) { }\n\n    public int count => this.bag.size();\n\n    public int code => Codes.next();\n}\n",
+);
+
+/// A method no class declares runs the class's `__call` or `__callStatic`, so its call has the effects the `extern` on
+/// that magic method declares, and an unknown effect without one, as any call of a plain PHP method does.
+#[test]
+fn a_getter_calling_a_method_a_magic_method_serves_has_the_effects_of_the_magic_method() {
+    let pure = (
+        "app/Stubs/Magic.sharp",
+        "namespace App.Stubs;\n\nimport Lib.Bag;\nimport Lib.Codes;\n\nextern Bag.__call;\nextern Codes.__callStatic;\n",
+    );
+    let timed = (
+        "app/Stubs/Magic.sharp",
+        "namespace App.Stubs;\n\nimport Lib.Bag;\nimport Lib.Codes;\n\nextern Bag.__call uses Clock;\nextern Codes.__callStatic;\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[SHELF, MAGIC]),
+        [
+            "app/Shop/Shelf.sharp:10:25 impure-getter: Getter `count` calls `Bag.__call`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Bag.__call;` when it has no effect, or name its effects after `uses`.",
+            "app/Shop/Shelf.sharp:12:24 impure-getter: Getter `code` calls `Codes.__callStatic`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Codes.__callStatic;` when it has no effect, or name its effects after `uses`.",
+        ]
+    );
+    assert_eq!(issues(pure, &[MAGIC]), Vec::<String>::new());
+    assert_eq!(effect_issues(&[SHELF, MAGIC, pure]), Vec::<String>::new());
+    assert_eq!(
+        effect_issues(&[SHELF, MAGIC, timed]),
+        [
+            "app/Shop/Shelf.sharp:10:25 impure-getter: Getter `count` calls `Bag.__call`, which has the effect `Clock`. Getters must be pure."
+        ]
+    );
+}
+
+/// Spec section 29: code without a body is pure unless it says `uses`, function types included, so calling a property
+/// a PHP# class declares with a `Function` type has no effect.
+#[test]
+fn a_getter_calling_a_property_holding_a_function_type_passes() {
+    let pricing = (
+        "app/Shop/Pricing.sharp",
+        "namespace App.Shop;\n\npublic class Pricing\n{\n    public Pricing(private Function<int(int)> rate) { }\n\n    public int price => this.rate(2);\n}\n",
+    );
+
+    assert_eq!(effect_issues(&[pricing]), Vec::<String>::new());
+}
+
+/// A plain PHP property holding a closure or a callable declares no effect, so calling it has an unknown effect until
+/// an `extern` on its class declares one. An object with `__invoke` has the effects of its `__invoke`.
+#[test]
+fn a_getter_calling_a_plain_php_property_holding_a_function_has_an_unknown_effect() {
+    let holder = (
+        "src/Lib/Holder.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Formatter\n{\n    public function __invoke(int $amount): int\n    {\n        return $amount;\n    }\n}\n\nfinal class Holder\n{\n    /** @var \\Closure(int): int */\n    public \\Closure $closure;\n\n    /** @var callable(int): int */\n    public $callback;\n\n    public Formatter $format;\n}\n",
+    );
+    let till = (
+        "app/Shop/Till.sharp",
+        "namespace App.Shop;\n\nimport Lib.Holder;\n\npublic class Till\n{\n    public Till(private Holder holder) { }\n\n    public int closed => this.holder.closure(2);\n\n    public int called => this.holder.callback(2);\n\n    public int formatted => this.holder.format(2);\n}\n",
+    );
+    let pure = ("app/Stubs/Holder.sharp", "namespace App.Stubs;\n\nimport Lib.Holder;\n\nextern Holder;\n");
+
+    assert_eq!(
+        effect_issues(&[till, holder]),
+        [
+            "app/Shop/Till.sharp:9:26 impure-getter: Getter `closed` calls `Holder.closure`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Holder;` when it has no effect, or name its effects after `uses`.",
+            "app/Shop/Till.sharp:11:26 impure-getter: Getter `called` calls `Holder.callback`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Holder;` when it has no effect, or name its effects after `uses`.",
+            "app/Shop/Till.sharp:13:29 impure-getter: Getter `formatted` calls `Formatter.__invoke`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Formatter.__invoke;` when it has no effect, or name its effects after `uses`.",
+        ]
+    );
+    assert_eq!(
+        effect_issues(&[till, holder, pure]),
+        [
+            "app/Shop/Till.sharp:13:29 impure-getter: Getter `formatted` calls `Formatter.__invoke`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Formatter.__invoke;` when it has no effect, or name its effects after `uses`."
+        ]
+    );
+}
+
 #[test]
 fn a_getter_reaching_a_method_that_calls_an_extern_with_an_effect_in_another_file_is_refused() {
     let order =

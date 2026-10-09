@@ -140,10 +140,16 @@ impl<'analysis> Types<'analysis> {
     /// The declaration the method call `call`, null-safe or not, runs, as the analysis resolved it when it checked the
     /// call: a method, a method the class's `__call` or `__callStatic` serves, or a property holding a function, as spec
     /// section 14 calls one. Every class the receiver can be has the same kind of member, and the declaration is the
-    /// first the analysis recorded.
+    /// first the analysis recorded. A call of a property also records what the function it holds runs, such as an
+    /// object's `__invoke`, for the effects check, and lowers as the property alone.
     pub(crate) fn call_target(&self, call: &Expression) -> Declaration {
-        let declarations: Vec<Declaration> =
-            self.artifacts.get_callees(call).map(|target| self.target_declaration(target)).collect();
+        let targets: Vec<&CallTarget> = self.artifacts.get_callees(call).collect();
+        let calls_property = targets.iter().any(|target| matches!(target, CallTarget::Property { .. }));
+        let declarations: Vec<Declaration> = targets
+            .into_iter()
+            .filter(|target| !calls_property || matches!(target, CallTarget::Property { .. }))
+            .map(|target| self.target_declaration(target))
+            .collect();
         let Some(&declaration) = declarations.first() else {
             unreachable!(
                 "the analysis records what each call of a file the checker accepted runs, not {:?}",

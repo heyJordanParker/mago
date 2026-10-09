@@ -4518,6 +4518,39 @@ fn a_call_of_a_property_holding_a_function_calls_the_function() {
 }
 
 /// ```php
+/// return ($this->format)($amount);
+/// ```
+///
+/// A property holding an object whose class declares `__invoke` is called as that property, though the analysis also
+/// records the `__invoke` it runs.
+#[test]
+fn a_call_of_a_property_holding_an_invokable_object_calls_the_property() {
+    let lowered = Lowered::with(
+        "namespace App.Tenant;\n\nimport Lib.Formatter;\n\nclass Report\n{\n    private Formatter format;\n\n    public Report(Formatter format)\n    {\n        this.format = format;\n    }\n\n    public int run(int amount)\n    {\n        return this.format(amount);\n    }\n}\n",
+        &[(
+            "src/Lib/Formatter.php",
+            "<?php namespace Lib; final class Formatter { public function __invoke(int $amount): int { return $amount; } }",
+        )],
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CALL
+                  PROP
+                    VAR
+                      ZVAL "this"
+                    ZVAL "format"
+                  ARG_LIST
+                    VAR
+                      ZVAL "amount"
+        "#}
+    );
+}
+
+/// ```php
 /// $total = $doc->total(...);
 /// return $total() + $doc->count();
 /// ```

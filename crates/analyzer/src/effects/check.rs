@@ -61,9 +61,8 @@ fn impure(code: IssueCode, message: String, impurity: &Impurity) -> Issue {
     let issue = Issue::error(message).with_code(code.as_str()).with_annotation(Annotation::primary(impurity.span));
 
     match impurity.effect {
-        Some(Effect::Unknown(_)) => issue.with_help(format!(
-            "Declare it in a .sharp file: `extern {};` when it has no effect, or name its effects after `uses`.",
-            impurity.cause
+        Some(Effect::Unknown(target)) => issue.with_help(format!(
+            "Declare it in a .sharp file: `extern {target};` when it has no effect, or name its effects after `uses`."
         )),
         _ => issue,
     }

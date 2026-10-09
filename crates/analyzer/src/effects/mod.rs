@@ -25,7 +25,8 @@ pub(crate) mod summary;
 pub enum Effect {
     /// An effect an `extern` declaration lists for the plain PHP called, named by its class, such as `Sharp\Http`.
     Foreign(Word),
-    /// A call into plain PHP that no `extern` declaration covers, named as PHP# writes the callee.
+    /// A call into plain PHP that no `extern` declaration covers, named by the target of the `extern` that would cover
+    /// it as PHP# writes it: the callee, such as `trim`, or the class of a property holding a function, such as `Holder`.
     Unknown(Word),
 }
 

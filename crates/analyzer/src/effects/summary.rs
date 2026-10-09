@@ -432,8 +432,8 @@ where
             CallExpression::StaticMethod(call) => (None, &call.argument_list, None),
         };
 
-        // A call of a lambda written in this body runs the lambda here. Any other function value is pure until PR 2
-        // gives `Function<…>` its `uses`.
+        // A call of a lambda written in this body runs the lambda here. A call of any other function a local holds is
+        // pure, as a `Function` type is until the parser gives `Function<…>` its `uses`.
         if let Some(lambda) = function.and_then(|function| self.lambda(function)) {
             let roots: Vec<Roots> = arguments.arguments.iter().map(|argument| self.roots(argument.value())).collect();
             self.inline(lambda, |index| roots.get(index).cloned().unwrap_or_default());
@@ -464,10 +464,51 @@ where
                     let class = named_class.unwrap_or(declaring_class);
                     self.method_call(declaring_class, method_name, class, span, receiver, arguments);
                 }
+                CallTarget::MagicMethod {
+                    callee: FunctionLikeIdentifier::Method(magic_class, magic_method),
+                    class: served_class,
+                    ..
+                } => {
+                    self.method_call(magic_class, magic_method, served_class, span, receiver, arguments);
+                }
+                CallTarget::Property { class, property } => self.property_call(class, property, span),
                 CallTarget::FunctionLike { callee: FunctionLikeIdentifier::Closure(_), .. }
-                | CallTarget::MagicMethod { .. }
-                | CallTarget::Property { .. } => {}
+                | CallTarget::MagicMethod { .. } => {}
             }
+        }
+    }
+
+    /// Records a call of the property `property` of `class` that holds a function. A PHP# class declares it with a
+    /// `Function` type, which is pure without `uses`. A plain PHP closure or callable has the effects the `extern` on
+    /// its class declares, or `Unknown` without one. An object's `__invoke` is recorded as the method it is.
+    fn property_call(&mut self, class: Word, property: Word, span: Span) {
+        let codebase = self.codebase();
+        let Some(class_like) = codebase.get_class_like(class.as_bytes()) else {
+            return;
+        };
+        if class_like.flags.is_sharp() {
+            return;
+        }
+
+        let holds_object = codebase
+            .get_property(class.as_bytes(), property.as_bytes())
+            .and_then(|metadata| metadata.type_metadata.as_ref())
+            .is_some_and(|metadata| {
+                metadata.type_union.types.iter().all(|atomic| {
+                    matches!(atomic, TAtomic::Object(object)
+                        if object.get_name().is_some_and(|name| !name.as_bytes().eq_ignore_ascii_case(b"Closure")))
+                })
+            });
+        if holds_object {
+            return;
+        }
+
+        let class_name = short_name(class_like.original_name);
+        let cause =
+            concat_word!(class_name, ".", word(property.as_bytes().strip_prefix(b"$").unwrap_or(property.as_bytes())));
+        match self.extern_of(class_like.name, empty_word()) {
+            Some(declaration) => self.plain_php(Some(declaration), span, cause),
+            None => self.summary.effects.push((Effect::Unknown(class_name), span, cause)),
         }
     }
 
