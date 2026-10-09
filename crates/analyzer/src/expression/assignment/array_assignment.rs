@@ -18,6 +18,7 @@ use mago_codex::ttype::combiner;
 use mago_codex::ttype::combiner::CombinerOptions;
 use mago_codex::ttype::comparator::ComparisonResult;
 use mago_codex::ttype::comparator::union_comparator;
+use mago_codex::ttype::get_array_parameters;
 use mago_codex::ttype::get_arraykey;
 use mago_codex::ttype::get_int;
 use mago_codex::ttype::get_iterable_parameters;
@@ -44,10 +45,13 @@ use crate::context::block::ReferenceConstraintSource;
 use crate::error::AnalysisError;
 use crate::expression::assignment::PropertyWriteKind;
 use crate::expression::assignment::property_assignment;
+use crate::resolver::method::get_declared_collection;
 use crate::utils::expression::array::ArrayTarget;
 use crate::utils::expression::array::get_array_target_type_given_index;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::expression::get_index_id;
+use crate::utils::names::display_type;
+use crate::utils::names::display_value_type;
 
 pub(crate) fn analyze<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
@@ -130,6 +134,49 @@ where
         root_array_type
     };
 
+    // A PHP# local, parameter or `field` is the collection it is declared as, so an element written into it must fit
+    // that type's elements, as one written into a property must, and the place keeps its type. Its key is the index
+    // checks' to report.
+    if context.dialect.is_sharp()
+        && let Expression::ConstantAccess(access) = root_array_expression.unparenthesized()
+        && let Some(declared) = get_declared_collection(context, block_context, artifacts, root_array_expression)
+    {
+        let (_, declared_element) = get_array_parameters(&declared, context.codebase);
+        let fits = root_array_type.types.iter().all(|atomic| {
+            let TAtomic::Array(written) = atomic else {
+                return true;
+            };
+
+            union_comparator::is_contained_by(
+                context.codebase,
+                &get_array_parameters(written, context.codebase).1,
+                &declared_element,
+                false,
+                false,
+                false,
+                &mut ComparisonResult::with_strict_nonnull(true),
+            )
+        });
+        if !fits {
+            let declared = TUnion::from_atomic(TAtomic::Array(declared));
+            let name = String::from_utf8_lossy(access.name.value());
+            let declared_str = display_type(context, &declared);
+            let written_str = display_value_type(context, &root_array_type, &declared);
+            context.collector.report_with_code(
+                IssueCode::InvalidLocalAssignmentValue,
+                Issue::error(format!("Invalid assignment to `{name}`: it is declared as `{declared_str}`."))
+                    .with_annotation(
+                        Annotation::primary(array_target.span()).with_message(format!("This makes it `{written_str}`.")),
+                    )
+                    .with_help(format!(
+                        "Write a value of `{declared_str}`'s element type, or change the type `{name}` is declared with."
+                    )),
+            );
+
+            root_array_type = declared;
+        }
+    }
+
     if let Expression::Access(Access::Property(property_access)) = &root_array_expression {
         property_assignment::analyze(
             context,
@@ -137,7 +184,7 @@ where
             artifacts,
             property_access,
             &root_array_type,
-            Some(root_array_expression.span()),
+            Some(root_array_expression),
             if root_is_array_access_object {
                 PropertyWriteKind::ArrayAccessMutation
             } else {
@@ -334,6 +381,7 @@ where
                         keyed_array.non_empty = true;
                     }
                 }
+                TArray::Set(_) => {}
             }
         }
     } else {
@@ -412,6 +460,7 @@ where
 
                         keyed_array.non_empty = true;
                     }
+                    TArray::Set(_) => {}
                 }
             }
         }
@@ -503,6 +552,7 @@ where
                             known_non_list: keyed_array.known_non_list,
                         })));
                     }
+                    TArray::Set(_) => collection_types.push(original_type.clone()),
                 },
                 TAtomic::Null | TAtomic::Void => {
                     collection_types.push(TAtomic::Array(TArray::Keyed(TKeyedArray {
@@ -588,6 +638,7 @@ where
                             })));
                         }
                     }
+                    TArray::Set(_) => collection_types.push(original_type.clone()),
                 },
                 TAtomic::Null | TAtomic::Void => {
                     collection_types.push(TAtomic::Array(TArray::List(TList {

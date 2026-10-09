@@ -54,7 +54,6 @@ use crate::resolver::property::resolve_declared_property;
 use crate::resolver::selector::resolve_member_selector;
 use crate::utils::expression::analyze_member_object;
 use crate::utils::expression::get_bare_name_variable_id;
-use crate::utils::expression::is_this;
 use crate::utils::names::display_atomic;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_code_member;
@@ -1201,12 +1200,10 @@ where
                 is_sharp.then(|| context.codebase.get_property_type(class, property_name.as_bytes()))?
             };
 
-            // `Class.name` is a static property of the class it names, and `this` keeps no expression type: its
-            // class is the scope's.
+            // `Class.name` is a static property of the class it names. Any other object is analyzed before its
+            // property's collection is asked for, so its class is its expression type.
             if let Some(class) = context.resolved_names.static_property_class(access) {
                 property_type(context.resolved_names.get(&class.name))?.clone()
-            } else if is_this(access.object, context.resolved_names) {
-                property_type(block_context.scope.get_class_like_name()?.as_bytes())?.clone()
             } else {
                 artifacts.get_expression_type(access.object)?.types.iter().find_map(|atomic| match atomic {
                     TAtomic::Object(object) => property_type(object.get_name()?.as_bytes()).cloned(),
@@ -1224,8 +1221,9 @@ where
 }
 
 /// The class whose methods a PHP# collection has, as spec section 12 writes them: a `List<T>` is called as
-/// `Sharp\ListMethods<T>` and a `Map<K, V>` as `Sharp\MapMethods<K, V>`, so each method is typed by the elements.
-/// A PHP# element type is never narrower than `int` or `string`, so a literal the analyzer knows widens to it.
+/// `Sharp\ListMethods<T>`, a `Map<K, V>` as `Sharp\MapMethods<K, V>` and a `Set<T>` as `Sharp\SetMethods<T>`, so each
+/// method is typed by the elements. A PHP# element type is never narrower than `int` or `string`, so a literal the
+/// analyzer knows widens to it.
 fn get_collection_methods(array: &TArray, codebase: &CodebaseMetadata) -> TObject {
     let (mut key, mut value) = get_array_parameters(array, codebase);
     key.widen_scalars();
@@ -1234,6 +1232,7 @@ fn get_collection_methods(array: &TArray, codebase: &CodebaseMetadata) -> TObjec
     TObject::Named(match array {
         TArray::List(_) => TNamedObject::new_with_type_parameters(word("Sharp\\ListMethods"), Some(vec![value])),
         TArray::Keyed(_) => TNamedObject::new_with_type_parameters(word("Sharp\\MapMethods"), Some(vec![key, value])),
+        TArray::Set(_) => TNamedObject::new_with_type_parameters(word("Sharp\\SetMethods"), Some(vec![value])),
     })
 }
 
