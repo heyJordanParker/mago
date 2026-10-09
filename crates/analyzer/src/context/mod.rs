@@ -27,6 +27,8 @@ use mago_span::Span;
 use mago_syntax::comments::docblock::PrecedingDocblocks;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::Identifier;
+use mago_syntax::cst::Keyword;
+use mago_syntax::cst::Pattern;
 use mago_syntax::cst::Trivia;
 use mago_syntax::dialect::Dialect;
 
@@ -73,6 +75,9 @@ where
     pub(super) additional_symbol_references: Option<&'ctx SymbolReferences>,
     /// How many hidden variables the PHP# pattern forms being analyzed hold, as `php_shape` numbers them.
     pub(super) temporaries: u32,
+    /// The patterns of the PHP# `is` and `match` forms being analyzed, each with the `is` written before it, so a
+    /// report on their PHP names a pattern as the file writes it.
+    pub(super) patterns: Vec<(Option<Keyword<'arena>>, &'arena Pattern<'arena>)>,
     class_initializers: WordMap<WordSet>,
     /// How many class-likes of the codebase have each lowercase short name, counted the first time a message asks.
     short_name_counts: OnceCell<HashMap<String, u32>>,
@@ -113,6 +118,7 @@ where
             external_analysis_session,
             additional_symbol_references,
             temporaries: 0,
+            patterns: Vec::new(),
             class_initializers: WordMap::default(),
             short_name_counts: OnceCell::new(),
         }

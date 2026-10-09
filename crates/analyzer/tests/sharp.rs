@@ -2707,6 +2707,40 @@ fn a_redundant_null_check_names_the_test_it_is_written_with() {
     );
 }
 
+/// A redundant null check names its pattern by the words the pattern is written with, so a comment between them stays
+/// out of the message. The `is` and each `not` lead the check only when they are written right before it. PHP names its
+/// own operator.
+#[test]
+fn a_redundant_null_check_names_its_pattern_without_its_comments() {
+    let sharp = "namespace Demo;\n\nclass Billing\n{\n    public void renew(Customer report)\n    {\n        const a = report is /* c */ null;\n        const b = report is /* c */ not /* d */ null;\n        const c = report is (/* e */ null) or not null;\n        const d = report is { name: /* f */ null };\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Billing\n{\n    public function renew(Customer $report): void\n    {\n        $a = $report === /* c */ null;\n        $b = $report !== /* c */ null;\n    }\n}\n";
+    let redundant = |analyzed| -> Vec<String> {
+        worded(analyzed, &[("src/Demo/Customer.sharp", CUSTOMER)])
+            .into_iter()
+            .filter(|line| line.contains(" redundant-comparison "))
+            .map(|line| line.split(" | ").next().unwrap_or_default().to_owned())
+            .collect()
+    };
+
+    assert_eq!(
+        redundant(("src/Demo/Billing.php", php)),
+        [
+            "9:14 redundant-comparison Redundant `===` comparison: left-hand side is never identical to right-hand side.",
+            "10:14 redundant-comparison Redundant `!==` comparison: left-hand side is always not identical to right-hand side.",
+        ]
+    );
+    assert_eq!(
+        redundant(("src/Demo/Billing.sharp", sharp)),
+        [
+            "7:19 redundant-comparison Redundant `is null` check: `Customer` is never `null`.",
+            "8:19 redundant-comparison Redundant `is not null` check: `Customer` is never `null`.",
+            "9:19 redundant-comparison Redundant `null` check: `Customer` is never `null`.",
+            "9:47 redundant-comparison Redundant `not null` check: `Customer` is never `null`.",
+            "10:31 redundant-comparison Redundant `null` check: `string` is never `null`.",
+        ]
+    );
+}
+
 /// `== null` and `!= null` run as PHP's `=== null` and `!== null`, so they test for null alone and are no loose
 /// comparison with `null`.
 #[test]

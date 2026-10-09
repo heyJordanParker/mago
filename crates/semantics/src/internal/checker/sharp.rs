@@ -496,12 +496,8 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             Some(Class)
         }
-        // The walk checks a class's and an enum's name in `check_class_name`.
-        (Node::Interface(interface), File) => {
-            check_declared_name(interface.name.value, interface.name.span, context);
-
-            Some(Interface)
-        }
+        // The walk checks a class's, an interface's and an enum's name in `check_class_name`.
+        (Node::Interface(_), File) => Some(Interface),
         (Node::Enum(_), File) => Some(Enum),
         (Node::FunctionLikeParameterList(parameters), Method | Signature) => {
             report_optional_before_required(parameters, context);
@@ -3134,10 +3130,11 @@ pub fn check_binding_errors(context: &mut Context<'_, '_, '_>) {
     }
 }
 
-/// Checks the name of a PHP# class or enum against the names the engine reserves, beyond the keywords the PHP checks
-/// reject, and against the `__Something__` names spec section 27 removes. The standard library's `Sharp.Int`,
-/// `Sharp.Float` and `Sharp.Bool` are the engine's one exception, and the analyzer refuses them in any file that is not
-/// the standard library's.
+/// Checks the name of a PHP# class, interface or enum against the names the engine reserves, beyond the keywords the
+/// PHP checks reject, against the `__Something__` names spec section 27 removes, and against spec section 24's
+/// capital letter. A name gets the first of these errors only. The standard library's `Sharp.Int`, `Sharp.Float` and
+/// `Sharp.Bool` are the engine's one exception, and the analyzer refuses them in any file that is not the standard
+/// library's.
 #[inline]
 pub fn check_class_name(class_name: &LocalIdentifier, context: &mut Context<'_, '_, '_>) {
     let is_keyword = RESERVED_KEYWORDS
@@ -3156,9 +3153,29 @@ pub fn check_class_name(class_name: &LocalIdentifier, context: &mut Context<'_, 
                 .with_annotation(Annotation::primary(class_name.span).with_message("Class declared here."))
                 .with_note("PHP# reserves this name for a type."),
         );
-    } else {
+    } else if is_keyword || is_magic_name(class_name.value) {
         check_declared_name(class_name.value, class_name.span, context);
+    } else {
+        check_capitalized(class_name.value, class_name.span, context);
     }
+}
+
+/// Reports a type name a PHP# file gives that does not start with a capital letter, A to Z, as spec section 24 writes
+/// every type but the built-in ones. The parser reads the same letter to tell a type with type arguments, `Box<int>`,
+/// from a comparison.
+fn check_capitalized(name: &[u8], span: Span, context: &mut Context<'_, '_, '_>) {
+    if name.first().is_some_and(u8::is_ascii_uppercase) {
+        return;
+    }
+
+    let name = BytesDisplay(name);
+
+    context.report(
+        Issue::error(format!(
+            "`{name}` must start with a capital letter: PHP# capitalizes every type except the built-in ones."
+        ))
+        .with_annotation(Annotation::primary(span).with_message("Named here.")),
+    );
 }
 
 /// Checks the classes and imports of a PHP# file against each other, as the engine does when it compiles the file.
@@ -3189,6 +3206,8 @@ pub fn check_declarations(program: &Program, context: &mut Context<'_, '_, '_>) 
                 .with_annotation(Annotation::primary(import.span()).with_message("Imported here."))
                 .with_help(rename.clone()),
             );
+        } else if let Some(alias) = &import.alias {
+            check_capitalized(alias.identifier.value, alias.identifier.span, context);
         }
 
         if let Some(earlier) =

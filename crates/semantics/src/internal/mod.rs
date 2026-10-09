@@ -163,6 +163,10 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
     #[inline]
     fn walk_in_interface(&self, interface: &'ast Interface<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
         checker::class_like::check_interface(interface, context);
+
+        if context.program.dialect.is_sharp() {
+            checker::sharp::check_class_name(&interface.name, context);
+        }
     }
 
     #[inline]
