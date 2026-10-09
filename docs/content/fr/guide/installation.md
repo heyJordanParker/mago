@@ -1,6 +1,6 @@
 +++
 title = "Installation"
-description = "Installer Mago via le script shell, un téléchargement manuel, Docker, ou le gestionnaire de paquets de votre langage."
+description = "Installer Mago via le script shell, un téléchargement manuel ou Composer."
 nav_order = 20
 nav_section = "Guide"
 +++
@@ -15,19 +15,19 @@ La voie recommandée sur macOS et Linux. Le script détecte votre plateforme, r�
 Avec `curl` :
 
 ```sh
-curl --proto '=https' --tlsv1.2 -sSf https://carthage.software/mago.sh | bash
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/heyJordanParker/mago-sharp/master/scripts/install.sh | bash
 ```
 
 Avec `wget` :
 
 ```sh
-wget -qO- https://carthage.software/mago.sh | bash
+wget -qO- https://raw.githubusercontent.com/heyJordanParker/mago-sharp/master/scripts/install.sh | bash
 ```
 
 ### Épingler une version spécifique
 
 ```sh
-curl --proto '=https' --tlsv1.2 -sSf https://carthage.software/mago.sh | bash -s -- --version=1.51.0
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/heyJordanParker/mago-sharp/master/scripts/install.sh | bash -s -- --version=0.2.0
 ```
 
 La même syntaxe fonctionne avec `wget`.
@@ -39,7 +39,7 @@ Si la [GitHub CLI](https://cli.github.com/) est dans votre PATH, le script véri
 Pour rendre la vérification obligatoire, passez `--always-verify`. Le script s'interrompt avant de toucher votre PATH si `gh` est indisponible, trop ancien ou si l'attestation ne correspond pas.
 
 ```sh
-curl --proto '=https' --tlsv1.2 -sSf https://carthage.software/mago.sh | bash -s -- --always-verify
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/heyJordanParker/mago-sharp/master/scripts/install.sh | bash -s -- --always-verify
 ```
 
 Pour désactiver entièrement, passez `--no-verify`. Les deux drapeaux sont mutuellement exclusifs.
@@ -72,19 +72,7 @@ Une vérification réussie affiche `Verification succeeded!` et l'exécution de 
 
 L'attestation est liée à l'archive, pas au binaire extrait. Si vous n'avez gardé que le binaire, vous ne pouvez pas le vérifier directement. Re-téléchargez l'archive, vérifiez-la, et comparez le `sha256sum` du binaire interne à celui déjà sur votre système.
 
-## Docker
-
-L'image officielle est construite à partir de `scratch` et pèse environ 26 Mo. Elle s'exécute partout où Docker s'exécute, prend en charge `linux/amd64` et `linux/arm64`, et ne nécessite aucun runtime PHP hôte.
-
-```sh
-docker run --rm -v $(pwd):/app -w /app ghcr.io/carthage-software/mago lint
-```
-
-Les tags incluent `latest`, des versions exactes et des épinglages progressivement plus larges (par exemple `1.51.0`, `1.51`, `1`). La [recette Docker](/recipes/docker/) couvre les exemples CI et les limitations à connaître.
-
 ## Gestionnaires de paquets
-
-Ces voies sont pratiques mais dépendent de calendriers de publication externes qui sont souvent en retard sur la release GitHub. Après une installation par l'une d'elles, lancez [`mago self-update`](/guide/upgrading/) pour récupérer le dernier binaire officiel.
 
 ### Composer
 
@@ -102,24 +90,6 @@ Si la limite de taux anonyme de GitHub bloque le premier téléchargement (fréq
 - run: vendor/bin/mago lint
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-```
-
-### Homebrew
-
-La formule maintenue par la communauté est souvent en retard sur la release officielle. Installez-la, puis lancez `mago self-update` immédiatement.
-
-```sh
-brew install mago
-mago self-update
-```
-
-### Cargo
-
-La publication sur Crates.io peut avoir quelques heures de retard sur une release. Même schéma qu'avec Homebrew.
-
-```sh
-cargo install mago
-mago self-update
 ```
 
 ## Vérification des releases en détail
@@ -150,7 +120,7 @@ L'appel de vérification lit depuis l'API publique des attestations, donc aucun 
 
 ### Épingler le script d'installation
 
-`https://carthage.software/mago.sh` redirige vers [`scripts/install.sh`](https://github.com/carthage-software/mago/blob/main/scripts/install.sh) sur la branche `main`. Les futures révisions sont prises automatiquement, ce qui est pratique mais signifie aussi que les futurs changements du script arrivent sans préavis.
+L'URL du script ci-dessus sert [`scripts/install.sh`](https://github.com/heyJordanParker/mago-sharp/blob/master/scripts/install.sh) depuis la branche `master`. Les futures révisions sont prises automatiquement, ce qui est pratique mais signifie aussi que les futurs changements du script arrivent sans préavis.
 
 Pour une hygiène de chaîne d'approvisionnement plus stricte, épinglez le script à un commit spécifique que vous avez relu :
 
