@@ -1984,6 +1984,35 @@ fn a_comparison_that_always_or_never_holds_speaks_of_its_bool() {
     );
 }
 
+/// A `match` arm that never or always matches writes the `bool` of its condition as PHP# writes it. PHP keeps its own
+/// wording.
+#[test]
+fn a_match_arm_that_never_or_always_matches_speaks_of_its_bool() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static string twice(int x) => match (x) { 1 => \"one\", 1 => \"again\", default => \"other\" };\n    public static string always() => match (true) { true => \"yes\", default => \"no\" };\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function twice(int $x): string { return match ($x) { 1 => 'one', 1 => 'again', default => 'other' }; }\n    public static function always(): string { return match (true) { true => 'yes', default => 'no' }; }\n}\n";
+    let arms = |analyzed| -> Vec<String> {
+        worded(analyzed, &[])
+            .into_iter()
+            .filter(|line| line.contains(" unreachable-match-arm ") || line.contains(" match-arm-always-true "))
+            .collect()
+    };
+
+    assert_eq!(
+        arms(("src/Demo/Report.php", php)),
+        [
+            "7:84 unreachable-match-arm This match arm is unreachable. | This arm can never be reached | In this match expression | The condition is always false in this context.",
+            "8:69 match-arm-always-true This match arm is always true, making subsequent arms unreachable. | This arm covers all remaining cases for the subject | In this match expression | Any arms after this one can never be reached.",
+        ]
+    );
+    assert_eq!(
+        arms(("src/Demo/Report.sharp", sharp)),
+        [
+            "5:66 unreachable-match-arm This match arm is unreachable. | This arm can never be reached | In this match expression | The condition is always `false` in this context.",
+            "6:53 match-arm-always-true This match arm is always `true`, making subsequent arms unreachable. | This arm covers all remaining cases for the subject | In this match expression | Any arms after this one can never be reached.",
+        ]
+    );
+}
+
 /// An operand that may be `false`, from a PHP method, asks for a check of `false`. PHP# has no falsiness, and keeps
 /// `(int)` between numbers, so no cast turns `false` into one. PHP keeps its own wording.
 #[test]
