@@ -1869,13 +1869,16 @@ where
         }
 
         let key_id = display_sharp_type(context, key_type);
-        context.collector.report_with_code(
-            IssueCode::TemplateConstraintViolation,
-            Issue::error(format!(
-                "A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value, and `{key_id}` has none."
-            ))
-            .with_annotation(Annotation::primary(span).with_message(format!("`{key_id}` keys this `Map`.")))
-            .with_help("Key the `Map` by an `int`, a `string` or a backed enum, such as `enum Status: string`."),
-        );
+        context.collector.report_with_code(IssueCode::TemplateConstraintViolation, map_key_error(&key_id, span));
     }
+}
+
+/// The error for a PHP# `Map` keyed by `key_id`, a type that is not `int`, not `string` and has no `int` or `string`
+/// backing value, written at `span`. A `Map` type and a `Map` literal state the rule in these words.
+pub(crate) fn map_key_error(key_id: &str, span: Span) -> Issue {
+    Issue::error(format!(
+        "A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value, and `{key_id}` has none."
+    ))
+    .with_annotation(Annotation::primary(span).with_message(format!("`{key_id}` keys this `Map`.")))
+    .with_help("Key the `Map` by an `int`, a `string` or a backed enum, such as `enum Status: string`.")
 }

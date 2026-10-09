@@ -54,6 +54,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::statement::function_like::map_key_error;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::misc::unwrap_expression;
 use crate::utils::names::display_atomic;
@@ -195,13 +196,7 @@ where
 
                             // PHP# casts only between numbers, so its literal names the rule a `Map` type keeps.
                             let issue = if context.dialect.is_sharp() {
-                                Issue::error(format!(
-                                    "A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value, and `{item_key_type_id}` has none."
-                                ))
-                                .with_annotation(
-                                    Annotation::primary(key_span).with_message(format!("`{item_key_type_id}` keys this `Map`.")),
-                                )
-                                .with_help("Key the `Map` by an `int`, a `string` or a backed enum, such as `enum Status: string`.")
+                                map_key_error(&item_key_type_id, key_span)
                             } else {
                                 Issue::error("Invalid array key type.")
                                     .with_annotation(Annotation::primary(key_span).with_message(format!(
