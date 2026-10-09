@@ -159,10 +159,13 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Statement<'arena> {
                         && let UseItems::Sequence(sequence) = &r#use.items
                     {
                         for item in &sequence.items {
-                            if let Some(alias) = &item.alias {
-                                let class_name = ascii_lowercase_word(&php_name(&item.name));
-                                context.renamed_imports.insert(class_name, word(alias.identifier.value));
-                            }
+                            let imported_name = item
+                                .alias
+                                .as_ref()
+                                .map_or_else(|| item.name.last_segment(), |alias| alias.identifier.value);
+                            context
+                                .imported_names
+                                .insert(ascii_lowercase_word(&php_name(&item.name)), word(imported_name));
                         }
                     }
                     if context.settings.check_use_statements {

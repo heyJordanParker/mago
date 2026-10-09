@@ -7,7 +7,6 @@ use mago_codex::ttype::cast::cast_atomic_to_callable;
 use mago_codex::ttype::expander::contains_parameter_variable;
 use mago_codex::ttype::template::TemplateResult;
 use mago_codex::ttype::union::TUnion;
-use mago_names::display_sharp_member;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -40,6 +39,7 @@ use crate::plugin::ExpressionHookResult;
 use crate::plugin::context::HookContext;
 use crate::utils::expression::get_bare_name_variable_id;
 use crate::utils::names::display_atomic;
+use crate::utils::names::display_code_member;
 use crate::utils::names::display_missing_imports;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for FunctionCall<'arena> {
@@ -335,11 +335,9 @@ where
 
             let method = codebase.get_method_by_id(method)?;
 
-            // Code to write names the class by its short name, as its import binds it: PHP# refuses a full name in
-            // code, so the dotted name that tells two classes apart in prose would not compile here.
             Some((
                 class.original_name,
-                format!("`{}(…)`", display_sharp_member(class.original_name, method.original_name)),
+                format!("`{}(…)`", display_code_member(context, class.original_name, method.original_name)),
             ))
         })
         .unzip();
@@ -460,7 +458,7 @@ where
     Some(if block_context.scope.is_static() {
         format!(
             "Write `{}()`: a static method reaches the members of its class through the class name.",
-            display_sharp_member(class.original_name, method.original_name)
+            display_code_member(context, class.original_name, method.original_name)
         )
     } else {
         format!("Write `this.{}()`: members of the same object are always written with `this.`.", method.original_name)

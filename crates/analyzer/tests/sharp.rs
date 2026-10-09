@@ -695,7 +695,7 @@ fn a_call_through_a_renamed_import_is_checked_as_the_imported_class_as_in_php() 
 
     assert_eq!(located_issues, ["7:82 invalid-argument"]);
     assert_eq!(codes(&located_issues), codes(&renamed_regex_call_issues()));
-    assert!(sharp_issues[0].message.contains("`Sharp\\Text\\Regex::matches`"), "{}", sharp_issues[0].message);
+    assert!(sharp_issues[0].message.contains("`Rx.matches`"), "{}", sharp_issues[0].message);
 }
 
 /// A message names a class the file renames by the name the file imports it as.
@@ -5434,6 +5434,38 @@ fn classes_that_share_a_short_name_are_named_by_their_full_name() {
     );
 }
 
+/// A class the file imports is named by the name its import gives it, the alias or the last segment as written, even
+/// when another class shares its short name: `Order` and `BillingOrder`, never the `App.Orders.Order` the file never
+/// wrote. The PHP twin keeps upstream's full names.
+#[test]
+fn a_class_the_file_imports_is_named_by_the_name_its_import_gives_it() {
+    let app_order = ("src/App/Orders/Order.php", "<?php\n\nnamespace App\\Orders;\n\nclass Order\n{\n}\n");
+    let billing_order = ("src/Billing/Order.php", "<?php\n\nnamespace Billing;\n\nclass Order\n{\n}\n");
+    let ledger = (
+        "src/Billing/Ledger.php",
+        "<?php\n\nnamespace Billing;\n\nclass Ledger\n{\n    public function last(): Order\n    {\n        return new Order();\n    }\n}\n",
+    );
+    let sharp = "namespace App.Shop;\n\nimport App.Orders.Order;\nimport Billing.Order as BillingOrder;\nimport Billing.Ledger;\n\nclass Shop\n{\n    public Order last(Ledger ledger) => ledger.last();\n}\n";
+    let php = "<?php\n\nnamespace App\\Shop;\n\nuse App\\Orders\\Order;\nuse Billing\\Order as BillingOrder;\nuse Billing\\Ledger;\n\nclass Shop\n{\n    public function last(Ledger $ledger): Order\n    {\n        return $ledger->last();\n    }\n}\n";
+    let others = [app_order, billing_order, ledger];
+    let returned = |analyzed| -> Vec<String> {
+        worded(analyzed, &others).into_iter().filter(|line| line.contains(" invalid-return-statement ")).collect()
+    };
+
+    assert_eq!(
+        returned(("src/App/Shop/Shop.php", php)),
+        [
+            "13:16 invalid-return-statement Invalid return type for function `App\\Shop\\Shop::last`: expected `App\\Orders\\Order`, but found `Billing\\Order`. | This has type `Billing\\Order` | The type `Billing\\Order` returned here is not compatible with the declared return type `App\\Orders\\Order`. | Change the return value to match `App\\Orders\\Order`, or update the function's return type declaration."
+        ]
+    );
+    assert_eq!(
+        returned(("src/App/Shop/Shop.sharp", sharp)),
+        [
+            "9:41 invalid-return-statement Invalid return type for method `Shop.last`: expected `Order`, but found `BillingOrder`. | This has type `BillingOrder` | The type `BillingOrder` returned here is not compatible with the declared return type `Order`. | Change the return value to match `Order`, or update the method's return type declaration."
+        ]
+    );
+}
+
 /// PHP's built-in class-likes don't count toward a shared short name: a `.sharp` file reaches `Dom\Node` only through
 /// an import, so the project's own `Node` keeps its short name. The PHP twin keeps upstream's full names.
 #[test]
@@ -5460,11 +5492,12 @@ fn a_class_that_shares_its_short_name_only_with_a_built_in_class_keeps_its_short
     );
 }
 
-/// A `.sharp` file reaches the standard library's `Sharp.Environment` with no import, so the project's own
-/// `App.Ops.Environment` shares its short name, and a message names both by their full dotted names. The PHP twin
-/// keeps upstream's full names.
+/// A `.sharp` file reaches the standard library's `Sharp.Environment` with no import, so it shares its short name with
+/// the project's own `App.Ops.Environment` and a message names it by its full dotted name. The file imports
+/// `App.Ops.Environment`, so a message names that class `Environment`, as the import does. The PHP twin keeps
+/// upstream's full names.
 #[test]
-fn a_class_that_shares_its_short_name_with_a_sharp_prelude_class_is_named_by_its_full_name() {
+fn a_sharp_prelude_class_that_shares_its_short_name_is_named_by_its_full_name() {
     let environment = ("src/App/Ops/Environment.php", "<?php\n\nnamespace App\\Ops;\n\nclass Environment\n{\n}\n");
     let shell = (
         "src/Lib/Shell.php",
@@ -5488,7 +5521,7 @@ fn a_class_that_shares_its_short_name_with_a_sharp_prelude_class_is_named_by_its
     assert_eq!(
         returned(("src/App/Jobs/Job.sharp", sharp)),
         [
-            "8:48 invalid-return-statement Invalid return type for method `Job.current`: expected `App.Ops.Environment`, but found `Sharp.Environment`. | This has type `Sharp.Environment` | The type `Sharp.Environment` returned here is not compatible with the declared return type `App.Ops.Environment`. | Change the return value to match `App.Ops.Environment`, or update the method's return type declaration."
+            "8:48 invalid-return-statement Invalid return type for method `Job.current`: expected `Environment`, but found `Sharp.Environment`. | This has type `Sharp.Environment` | The type `Sharp.Environment` returned here is not compatible with the declared return type `Environment`. | Change the return value to match `Environment`, or update the method's return type declaration."
         ]
     );
 }
@@ -5562,6 +5595,23 @@ fn a_match_that_misses_cases_of_an_unimported_enum_names_the_import() {
         written_errors(sharp, &issues),
         [
             "match match-not-exhaustive This `match` misses `Status.Open`, `Status.Closed` and `Status.Archived`. Add `import Lib.Status;` to the file.",
+            "match (ticket.status()) {\n    } empty-match-expression Match expression cannot be empty.",
+        ]
+    );
+}
+
+/// An import under another name binds its enum, so the missing arms are written with that name and need no import.
+#[test]
+fn a_match_that_misses_cases_of_an_enum_imported_under_another_name_writes_them_with_that_name() {
+    let sharp = "namespace Demo;\n\nimport Lib.Ticket;\nimport Lib.Status as State;\n\nclass Report\n{\n    public static string state(Ticket ticket) => match (ticket.status()) {\n    };\n}\n";
+
+    let issues =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", TICKETS)]);
+
+    assert_eq!(
+        written_errors(sharp, &issues),
+        [
+            "match match-not-exhaustive This `match` misses `State.Open`, `State.Closed` and `State.Archived`.",
             "match (ticket.status()) {\n    } empty-match-expression Match expression cannot be empty.",
         ]
     );
