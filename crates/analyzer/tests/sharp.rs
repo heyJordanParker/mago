@@ -4276,6 +4276,65 @@ fn a_member_whose_kind_differs_across_the_receivers_classes_is_an_error() {
     );
 }
 
+/// What the analysis recorded that each call of `calls` in the analyzed file runs, with `others` beside it.
+fn recorded_callees(
+    analyzed: (&'static str, &'static str),
+    others: &[(&'static str, &'static str)],
+    calls: &[&str],
+) -> Vec<Vec<String>> {
+    let (_, artifacts) = analyze_with_artifacts(&PLUGIN_REGISTRY, settings(), analyzed, others);
+
+    calls
+        .iter()
+        .map(|call| {
+            let start = analyzed.1.find(call).unwrap() as u32;
+            let call = Span::dummy(start, start + call.len() as u32);
+
+            artifacts.get_callees(&call).map(|callee| format!("{callee:?}")).collect()
+        })
+        .collect()
+}
+
+/// A call a PHP class's `__call` or `__callStatic` serves records that magic method, the class the call names, and the
+/// name the call wrote, so the lowering reads the method the analysis checked the call against.
+#[test]
+fn a_call_a_magic_method_serves_records_the_magic_method_and_the_called_name() {
+    let sharp = "namespace Demo;\n\nimport Lib.Bag;\nimport Lib.Calc;\n\nclass Report\n{\n    public int run(Bag bag, int extra)\n    {\n        Calc.remember(extra);\n        return strlen(gettype(bag.untagged()));\n    }\n}\n";
+    let library = "<?php namespace Lib; final class Bag { public function __call(string $name, array $arguments): mixed { return 1; } } final class Calc { public static function __callStatic(string $name, array $arguments): mixed { return null; } }";
+
+    assert_eq!(
+        recorded_callees(
+            ("src/Demo/Report.sharp", sharp),
+            &[("src/Lib/Bag.php", library)],
+            &["bag.untagged()", "Calc.remember(extra)"]
+        ),
+        [
+            [r#"MagicMethod { callee: Method("Lib\\Bag", "__call"), class: "Lib\\Bag", method: "untagged" }"#],
+            [r#"MagicMethod { callee: Method("lib\\calc", "__callstatic"), class: "Lib\\Calc", method: "remember" }"#],
+        ]
+    );
+}
+
+/// A call of a property holding a function records the property, whether its type is a PHP# `Function` or a PHP
+/// `\Closure`, so the lowering calls the function the property holds.
+#[test]
+fn a_call_of_a_property_holding_a_function_records_the_property() {
+    let sharp = "namespace Demo;\n\nimport Lib.Order;\n\nclass Report\n{\n    private Function<int(int)> scale;\n\n    public Report()\n    {\n        this.scale = n => n * 2;\n    }\n\n    public int run(Order order, int extra)\n    {\n        return this.scale(extra) + order.handler(extra);\n    }\n}\n";
+    let library = "<?php namespace Lib; final class Order { /** @var \\Closure(int): int */ public \\Closure $handler; public function __construct() { $this->handler = fn (int $n): int => $n; } }";
+
+    assert_eq!(
+        recorded_callees(
+            ("src/Demo/Report.sharp", sharp),
+            &[("src/Lib/Order.php", library)],
+            &["this.scale(extra)", "order.handler(extra)"]
+        ),
+        [
+            [r#"Property { class: "demo\\report", property: "$scale" }"#],
+            [r#"Property { class: "lib\\order", property: "$handler" }"#]
+        ]
+    );
+}
+
 /// The type arguments of the call in the analyzed file, with `library` beside it.
 fn recorded_type_arguments(analyzed: (&'static str, &'static str), library: &'static str, call: &str) -> Vec<String> {
     let start = analyzed.1.find(call).unwrap() as u32;

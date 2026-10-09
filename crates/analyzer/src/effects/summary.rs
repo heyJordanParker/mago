@@ -43,6 +43,7 @@ use mago_word::empty_word;
 use mago_word::word;
 
 use crate::artifacts::AnalysisArtifacts;
+use crate::artifacts::CallTarget;
 use crate::context::Context;
 use crate::effects::Body;
 use crate::effects::Call;
@@ -52,13 +53,6 @@ use crate::effects::EffectSummary;
 use crate::effects::Roots;
 use crate::effects::short_name;
 use crate::statement::function_like::FunctionLikeBody;
-
-/// A function-like a call resolved to, and the class the call names, which an `extern` lookup starts from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct CallTarget {
-    pub(crate) callee: FunctionLikeIdentifier,
-    pub(crate) class: Option<Word>,
-}
 
 /// Records the summary of `body`, whose parameters are declared at `parameters`, into `artifacts`.
 pub(crate) fn record<'arena, A>(
@@ -452,22 +446,27 @@ where
             return;
         };
 
-        for CallTarget { callee, class: named_class } in targets {
-            match callee {
-                FunctionLikeIdentifier::Function(function_name) => {
+        for target in targets {
+            match *target {
+                CallTarget::FunctionLike { callee: FunctionLikeIdentifier::Function(function_name), .. } => {
                     let cause = self
                         .codebase()
                         .get_function(function_name.as_bytes())
-                        .map_or(*function_name, |metadata| metadata.original_name);
+                        .map_or(function_name, |metadata| metadata.original_name);
                     let cause = sharp_name(cause);
                     let declaration = self.extern_of(empty_word(), ascii_lowercase_word(function_name.as_bytes()));
                     self.plain_php(declaration, span, cause);
                 }
-                FunctionLikeIdentifier::Method(declaring_class, method_name) => {
-                    let class = named_class.unwrap_or(*declaring_class);
-                    self.method_call(*declaring_class, *method_name, class, span, receiver, arguments);
+                CallTarget::FunctionLike {
+                    callee: FunctionLikeIdentifier::Method(declaring_class, method_name),
+                    class: named_class,
+                } => {
+                    let class = named_class.unwrap_or(declaring_class);
+                    self.method_call(declaring_class, method_name, class, span, receiver, arguments);
                 }
-                FunctionLikeIdentifier::Closure(_) => {}
+                CallTarget::FunctionLike { callee: FunctionLikeIdentifier::Closure(_), .. }
+                | CallTarget::MagicMethod { .. }
+                | CallTarget::Property { .. } => {}
             }
         }
     }
@@ -480,8 +479,8 @@ where
             return;
         };
 
-        for CallTarget { callee, .. } in targets {
-            let FunctionLikeIdentifier::Method(class, method) = callee else {
+        for target in targets {
+            let CallTarget::FunctionLike { callee: FunctionLikeIdentifier::Method(class, method), .. } = target else {
                 continue;
             };
 

@@ -30,6 +30,7 @@ use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
+use crate::artifacts::CallTarget;
 use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
@@ -380,6 +381,10 @@ where
             property.declaring_class,
             property.property_name,
         );
+        artifacts.record_call_target(
+            span,
+            CallTarget::Property { class: property.declaring_class, property: property.property_name },
+        );
 
         let (targets, has_invalid_target) =
             resolve_callable_targets(context, &property.property_type, span, &mut method_resolution.template_result);
@@ -587,11 +592,23 @@ where
 
         let requested_identifier =
             FunctionLikeIdentifier::Method(undocumented_method.classname, undocumented_method.method_name);
+        let magic_identifier = FunctionLikeIdentifier::Method(
+            magic_call_method.method_identifier.get_class_name(),
+            magic_call_method.method_identifier.get_method_name(),
+        );
+        if context.dialect.is_sharp() {
+            artifacts.record_call_target(
+                span,
+                CallTarget::MagicMethod {
+                    callee: magic_identifier,
+                    class: undocumented_method.classname,
+                    method: undocumented_method.method_name,
+                },
+            );
+        }
+
         let target = InvocationTarget::FunctionLike {
-            identifier: FunctionLikeIdentifier::Method(
-                magic_call_method.method_identifier.get_class_name(),
-                magic_call_method.method_identifier.get_method_name(),
-            ),
+            identifier: magic_identifier,
             metadata: method_metadata,
             inferred_return_type: None,
             effective_signature: None,
