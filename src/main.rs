@@ -58,6 +58,7 @@ use crate::config::Configuration;
 use crate::consts::MAXIMUM_PHP_VERSION;
 use crate::consts::MINIMUM_PHP_VERSION;
 use crate::consts::VERSION;
+use crate::consts::version_pin;
 use crate::error::Error;
 use crate::utils::configure_colors;
 use crate::utils::logger::initialize_logger;
@@ -318,12 +319,8 @@ fn check_project_version(configuration: &Configuration) -> Result<(), Error> {
     match result {
         VersionCheck::Match => Ok(()),
         VersionCheck::MajorDrift => {
-            let installed_major = VERSION.split('.').next().unwrap_or(VERSION);
             tracing::error!("Major versions may have incompatible config schemas; refusing to run.");
-            tracing::error!("Run `mago self-update --to-project-version` to sync to the pinned major.");
-            tracing::error!(
-                "Or reinstall the matching binary, or bump `version` in mago.toml to `{installed_major}` once you have reviewed the changelog."
-            );
+            tracing::error!("Set `version = \"{}\"` in mago.toml to use this mago binary.", version_pin());
 
             Err(Error::ProjectMajorVersionMismatch(pin.to_string(), VERSION.to_string()))
         }
