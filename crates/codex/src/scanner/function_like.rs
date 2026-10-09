@@ -87,6 +87,7 @@ where
     let span = method.span;
 
     let mut flags = MetadataFlags::origin_flags(context.file.file_type);
+    flags.set(MetadataFlags::SHARP, context.program.dialect.is_sharp());
 
     if method.returns_by_reference {
         flags |= MetadataFlags::BY_REFERENCE;
@@ -223,7 +224,7 @@ where
         ascii_lowercase_word(law.name.value),
         word(law.name.value),
         law.span(),
-        MetadataFlags::origin_flags(context.file.file_type),
+        MetadataFlags::origin_flags(context.file.file_type) | MetadataFlags::SHARP,
     );
     metadata.name_span = Some(law.name.span);
     metadata.type_resolution_context = Some(type_resolution_context.clone()).filter(|c| !c.is_empty());
@@ -264,6 +265,7 @@ where
     let verdict = evaluate_version_attributes(&function.attribute_lists, context, context.php_version);
 
     let mut flags = MetadataFlags::origin_flags(context.file.file_type);
+    flags.set(MetadataFlags::SHARP, context.program.dialect.is_sharp());
 
     if utils::block_has_yield(&function.body) {
         flags |= MetadataFlags::HAS_YIELD;
@@ -332,6 +334,7 @@ where
     let span = closure.span();
 
     let mut flags = MetadataFlags::origin_flags(context.file.file_type);
+    flags.set(MetadataFlags::SHARP, context.program.dialect.is_sharp());
 
     if utils::block_has_yield(&closure.body) {
         flags |= MetadataFlags::HAS_YIELD;
@@ -392,6 +395,7 @@ where
     let span = arrow_function.span();
 
     let mut flags = MetadataFlags::origin_flags(context.file.file_type);
+    flags.set(MetadataFlags::SHARP, context.program.dialect.is_sharp());
 
     if utils::expression_has_yield(arrow_function.expression) {
         flags |= MetadataFlags::HAS_YIELD;

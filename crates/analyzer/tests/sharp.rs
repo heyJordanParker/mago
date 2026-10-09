@@ -4362,20 +4362,89 @@ fn a_function_value_and_a_php_closure_of_the_same_signature_are_assignable_both_
     assert_eq!(issues(("src/Demo/Counter.sharp", sharp), &[("src/Lib/Tools.php", tools)]), Vec::<String>::new());
 }
 
-/// A `Function` value and a PHP closure with the same parameters have one type id, so a value that may be either holds
-/// only the signature combined last: the `else` branch's. A call through it checks literals by that one, so the PHP#
-/// value in the `else` branch refuses `[:]`, and the PHP closure in the `else` branch takes it.
-#[test]
-fn a_value_that_may_be_a_function_value_or_a_php_closure_of_one_signature_holds_the_last_one() {
-    let hooks = "<?php\n\nnamespace Lib;\n\nfinal class Hooks\n{\n    /** @var \\Closure(list<string>): int */\n    public \\Closure $names;\n\n    public function __construct()\n    {\n        $this->names = fn (array $names): int => count($names);\n    }\n}\n";
-    let sharp = "namespace Demo;\n\nimport Lib.Hooks;\n\nclass Counter\n{\n    public int sharpFirst(bool pick, Function<int(List<string>)> size, Hooks hooks)\n    {\n        const either = pick ? size : hooks.names;\n        return either([:]);\n    }\n\n    public int phpFirst(bool pick, Function<int(List<string>)> size, Hooks hooks)\n    {\n        const either = pick ? hooks.names : size;\n        return either([:]);\n    }\n}\n";
+const HOOKS: &str = "<?php\n\nnamespace Lib;\n\nfinal class Hooks\n{\n    /** @var \\Closure(list<string>): int */\n    public \\Closure $names;\n\n    /** @var \\Closure(list<string>): int */\n    public \\Closure $more;\n\n    /** @var \\Closure(list<string>): int<0, max> */\n    public \\Closure $counted;\n\n    public function __construct()\n    {\n        $this->names = fn (array $names): int => count($names);\n        $this->more = fn (array $names): int => count($names) + 1;\n        $this->counted = fn (array $names): int => count($names);\n    }\n}\n";
 
+/// A value that may be a `Function` value or a PHP closure of the same signature names the collections the `Function`
+/// value declares, in either order, after it is combined with another PHP closure and after a null check, so a call
+/// through it refuses `[:]` and takes `[]`.
+#[test]
+fn a_value_that_may_be_a_function_value_or_a_php_closure_of_one_signature_keeps_its_parameter_collections() {
+    let sharp = "namespace Demo;\n\nimport Lib.Hooks;\n\nclass Counter\n{\n    public int sharpFirst(bool pick, Function<int(List<string>)> size, Hooks hooks)\n    {\n        const either = pick ? size : hooks.names;\n        return either([:]) + either([]);\n    }\n\n    public int phpFirst(bool pick, Function<int(List<string>)> size, Hooks hooks)\n    {\n        const either = pick ? hooks.names : size;\n        return either([:]) + either([]);\n    }\n\n    public int third(bool pick, bool other, Function<int(List<string>)> size, Hooks hooks)\n    {\n        const either = pick ? size : hooks.names;\n        const any = other ? either : hooks.more;\n        return any([:]) + any([]);\n    }\n\n    public int narrowed(bool pick, Function<int(List<string>)>? size, Hooks hooks)\n    {\n        const either = pick ? size : hooks.names;\n        if (either != null)\n        {\n            return either([:]) + either([]);\n        }\n\n        return 0;\n    }\n}\n";
+
+    let message = "invalid-array-element `[:]` is an empty Map. An empty List is written `[]`.";
     assert_eq!(
-        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counter.sharp", sharp), &[("src/Lib/Hooks.php", hooks)])
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counter.sharp", sharp), &[("src/Lib/Hooks.php", HOOKS)])
             .iter()
             .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
             .collect::<Vec<_>>(),
-        ["16:23 invalid-array-element `[:]` is an empty Map. An empty List is written `[]`."]
+        [
+            format!("10:23 {message}"),
+            format!("16:23 {message}"),
+            format!("23:20 {message}"),
+            format!("31:27 {message}")
+        ]
+    );
+}
+
+/// A method value of a PHP# class is a function PHP# wrote, so a call through it checks literals as a call of the
+/// method does, also when the value may be a PHP closure of the same signature. A method value of a PHP class takes
+/// either literal, as the PHP method does.
+#[test]
+fn a_literal_of_the_other_collection_passed_to_a_method_value_is_an_error() {
+    let adder = "<?php\n\nnamespace Lib;\n\nfinal class Adder\n{\n    public function add(array $names): int\n    {\n        return count($names);\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Adder;\nimport Lib.Hooks;\n\nclass Counter\n{\n    public int run(Adder adder)\n    {\n        const own = this.add;\n        const shared = Counter.size;\n        const plain = adder.add;\n        return own([:]) + shared([:]) + plain([]) + plain([:]);\n    }\n\n    public int either(bool pick, Hooks hooks)\n    {\n        const own = pick ? this.add : hooks.names;\n        const shared = pick ? hooks.names : Counter.size;\n        return own([:]) + shared([:]) + own([]) + shared([]);\n    }\n\n    private int add(List<string> names) => count(names);\n\n    private static int size(List<string> names) => count(names);\n}\n";
+
+    let message = "invalid-array-element `[:]` is an empty Map. An empty List is written `[]`.";
+    assert_eq!(
+        analyze(
+            &PLUGIN_REGISTRY,
+            settings(),
+            ("src/Demo/Counter.sharp", sharp),
+            &[("src/Lib/Adder.php", adder), ("src/Lib/Hooks.php", HOOKS)]
+        )
+        .iter()
+        .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+        .collect::<Vec<_>>(),
+        [
+            format!("13:20 {message}"),
+            format!("13:34 {message}"),
+            format!("20:20 {message}"),
+            format!("20:34 {message}")
+        ]
+    );
+}
+
+/// A lambda's parameters are types PHP# wrote, so a call through a lambda checks literals as a call of a method does,
+/// also when the value may be a PHP closure of the same signature.
+#[test]
+fn a_literal_of_the_other_collection_passed_to_a_lambda_is_an_error() {
+    let sharp = "namespace Demo;\n\nimport Lib.Hooks;\n\nclass Counter\n{\n    public int run(bool pick, Hooks hooks)\n    {\n        const size = (List<string> names) => count(names);\n        const either = pick ? size : hooks.counted;\n        const other = pick ? hooks.counted : size;\n        return size([:]) + either([:]) + other([:]) + size([]) + either([]);\n    }\n}\n";
+
+    let message = "invalid-array-element `[:]` is an empty Map. An empty List is written `[]`.";
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counter.sharp", sharp), &[("src/Lib/Hooks.php", HOOKS)])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [format!("12:21 {message}"), format!("12:35 {message}"), format!("12:48 {message}")]
+    );
+}
+
+/// Plain PHP names a PHP# `Function` type as PHP names a closure type, so a `.php` message about one reads as it reads
+/// about a PHP closure.
+#[test]
+fn a_php_message_names_a_function_type_as_a_php_closure_type() {
+    let sharp = "namespace Demo;\n\npublic class Counter\n{\n    public int apply(Function<int(List<string>)> size) => size([\"a\"]);\n}\n";
+    let php = "<?php\n\nnamespace Lib;\n\nuse Demo\\Counter;\n\nfunction run(Counter $counter): int\n{\n    return $counter->apply(1);\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Lib/run.php", php), &[("src/Demo/Counter.sharp", sharp)])
+            .iter()
+            .map(|issue| format!("{} {}", located(php, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [
+            "9:28 invalid-argument Invalid argument type for argument #1 of `Demo\\Counter::apply`: expected `(closure(list<string>): int)`, but found `int(1)`."
+        ]
     );
 }
 

@@ -26,7 +26,8 @@ pub struct TCallableSignature {
     pub is_pure: bool,
     /// `true` if this signature specifically represents a closure instance.
     pub is_closure: bool,
-    /// `true` if PHP# wrote this signature as a `Function<…>` type, so its parameters are PHP# types.
+    /// `true` if PHP# wrote this signature, as a `Function<…>` type or as a method or lambda of a `.sharp` file, so its
+    /// parameters are PHP# types.
     pub is_sharp: bool,
     /// Ordered list of parameters expected by the callable signature.
     pub parameters: Vec<TCallableParameter>,
