@@ -665,7 +665,7 @@ where
         return;
     };
     let takes_map_literal = collections.clone().any(|array| matches!(array, TArray::Keyed(_)));
-    let takes_list_literal = collections.clone().any(|array| matches!(array, TArray::List(_)));
+    let takes_list_literal = collections.clone().any(|array| matches!(array, TArray::List(_) | TArray::Set(_)));
 
     // The values still to look at, last first, so the literals are reported in the order they are written.
     let mut values = vec![value];

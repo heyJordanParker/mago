@@ -4804,6 +4804,35 @@ fn a_map_literal_where_a_set_is_declared_is_an_error() {
     assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
 }
 
+/// A `List` and a `Set` each take a `List` literal and neither takes a `Map` literal, so a place declared as either
+/// refuses `[:]`. PHP has one empty array, and its array of either takes `[]`.
+#[test]
+fn a_place_declared_a_list_or_a_set_refuses_an_empty_map() {
+    let sharp =
+        "namespace Demo;\n\nclass Tags\n{\n    public List<int>|Set<int> ids()\n    {\n        return [:];\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /** @return list<int>|array<int, int> */\n    public function ids(): array\n    {\n        return [];\n    }\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tags.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["7:16 invalid-array-element `[:]` is an empty Map. An empty List is written `[]`."]
+    );
+    assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
+}
+
+/// A `Set` takes a `List` literal, so a place declared a `Map` or a `Set` takes `[1]` as the `Set`. PHP has one kind of
+/// array, and its array of either takes `[1]`.
+#[test]
+fn a_place_declared_a_map_or_a_set_takes_a_list_literal() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public Map<string, int>|Set<int> ids()\n    {\n        return [1];\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /** @return array<string, int>|array<int, int> */\n    public function ids(): array\n    {\n        return [1];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
+}
+
 /// PHP has one empty array, so a typed PHP place takes `[]` wherever a `list<string>` is declared.
 #[test]
 fn an_empty_php_array_where_a_list_is_declared_is_accepted() {
