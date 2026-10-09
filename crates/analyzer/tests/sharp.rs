@@ -1822,9 +1822,9 @@ fn a_condition_that_always_holds_names_its_php_sharp_type() {
     assert_eq!(
         messages(("src/Demo/Report.sharp", sharp), &[]),
         [
-            "This condition (type `2`) will always evaluate to true.",
+            "This condition (type `2`) will always evaluate to `true`.",
             "`if` takes a `bool`, but this is `int`.",
-            "This condition (type `true`) will always evaluate to true.",
+            "This condition (type `true`) will always evaluate to `true`.",
         ]
     );
     assert_eq!(
@@ -1849,8 +1849,8 @@ fn a_loop_condition_that_never_holds_names_its_php_sharp_type() {
     assert_eq!(
         impossible(("src/Demo/Report.sharp", sharp)),
         [
-            "8:16 impossible-condition Impossible condition: variable `n` (type `0`) will always evaluate to false. | This condition always evaluates to false | Variable `n` (type `0`) is never `true`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
-            "8:16 impossible-condition This loop condition (type `0`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
+            "8:16 impossible-condition Impossible condition: variable `n` (type `0`) will always evaluate to `false`. | This condition always evaluates to `false` | Variable `n` (type `0`) is never `true`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
+            "8:16 impossible-condition This loop condition (type `0`) will always evaluate to `false`. | This condition is always `false`, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
         ]
     );
     assert_eq!(
@@ -1894,23 +1894,53 @@ fn a_condition_that_always_or_never_holds_speaks_of_its_bool() {
     assert_eq!(
         worded(("src/Demo/Report.sharp", sharp), &[]),
         [
-            "5:56 impossible-condition This condition (type `false`) will always evaluate to false. | Expression of type `false` is always `false` | Because this condition is always false, the code block it controls will never be executed. | Check the logic of this expression. If the code block is intended to be unreachable, consider removing it. Otherwise, revise the condition.",
-            "6:57 impossible-condition This condition (type `false`) will always evaluate to false. | Expression of type `false` is always `false` | Because this condition is always false, the code block it controls will never be executed. | Check the logic of this expression. If the code block is intended to be unreachable, consider removing it. Otherwise, revise the condition.",
-            "7:55 redundant-condition This condition (type `true`) will always evaluate to true. | Expression of type `true` is always `true` | Because this condition is always true, the code block it controls will always execute if this part of the code is reached. | The explicit condition might be redundant. | Consider simplifying or removing the conditional check if the guarded code should always execute, or verify the expression's logic if a conditional check is truly needed.",
-            "8:60 redundant-condition This condition (type `true`) will always evaluate to true. | Expression of type `true` is always `true` | Because this condition is always true, the code block it controls will always execute if this part of the code is reached. | The explicit condition might be redundant. | Consider simplifying or removing the conditional check if the guarded code should always execute, or verify the expression's logic if a conditional check is truly needed.",
+            "5:56 impossible-condition This condition (type `false`) will always evaluate to `false`. | Expression of type `false` is always `false` | Because this condition is always `false`, the code block it controls will never be executed. | Check the logic of this expression. If the code block is intended to be unreachable, consider removing it. Otherwise, revise the condition.",
+            "6:57 impossible-condition This condition (type `false`) will always evaluate to `false`. | Expression of type `false` is always `false` | Because this condition is always `false`, the code block it controls will never be executed. | Check the logic of this expression. If the code block is intended to be unreachable, consider removing it. Otherwise, revise the condition.",
+            "7:55 redundant-condition This condition (type `true`) will always evaluate to `true`. | Expression of type `true` is always `true` | Because this condition is always `true`, the code block it controls will always execute if this part of the code is reached. | The explicit condition might be redundant. | Consider simplifying or removing the conditional check if the guarded code should always execute, or verify the expression's logic if a conditional check is truly needed.",
+            "8:60 redundant-condition This condition (type `true`) will always evaluate to `true`. | Expression of type `true` is always `true` | Because this condition is always `true`, the code block it controls will always execute if this part of the code is reached. | The explicit condition might be redundant. | Consider simplifying or removing the conditional check if the guarded code should always execute, or verify the expression's logic if a conditional check is truly needed.",
             "9:79 redundant-condition Redundant ternary operator: condition is always `true`. | This condition (type `true`) is always `true` | This `then` branch is always evaluated, making it the result of the expression | This `else` branch will never be evaluated | The ternary operator `? :` evaluates the `else` branch only when the condition is `false`. | Consider replacing the entire expression with just this `then` branch.",
             "9:94 impossible-condition Redundant ternary operator: condition is always `false`. | This condition (type `false`) is always `false` | This `then` branch will never be evaluated | This `else` branch is always evaluated, making it the result of the expression | The ternary operator `? :` evaluates the `then` branch only when the condition is `true`. | Consider replacing the entire expression with just this `else` branch.",
             "10:89 redundant-logical-operation Redundant `&&` operation: left operand is always `false` and right operand is not evaluated. | Left operand is always `false` | Right operand is not evaluated | The `&&` operator will always return `false` in this case. | Consider simplifying this expression to `false`.",
             "10:106 redundant-logical-operation Redundant `||` operation: left operand is always `true` and right operand is not evaluated. | Left operand is always `true` | Right operand is not evaluated | The `||` operator will always return `true` in this case. | Consider simplifying this expression to `true`.",
             "10:88 redundant-logical-operation Redundant `||` operation: left operand is always `false` and right operand is always `true`. | Left operand is always `false` | Right operand is always `true` | The `||` operator will always return `true` in this case. | Consider simplifying this expression to `true`.",
-            "11:76 impossible-condition Impossible condition: variable `off` (type `false`) will always evaluate to false. | This condition always evaluates to false | Variable `off` (type `false`) is never `true`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
-            "11:76 impossible-condition This loop condition (type `false`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
-            "11:102 impossible-condition Impossible condition: variable `on` (type `true`) will always evaluate to false. | This condition always evaluates to false | Variable `on` (type `true`) is never `false`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
-            "11:102 impossible-condition This loop condition (type `false`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
-            "11:128 redundant-condition Redundant condition: variable `on` (type `true`) will always evaluate to true. | This condition always evaluates to true | Variable `on` (type `true`) is never `false`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
-            "12:65 redundant-condition Redundant condition: variable `off` (type `false`) will always evaluate to true. | This condition always evaluates to true | Variable `off` (type `false`) is never `true`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
-            "13:73 redundant-condition Redundant condition: variable `off` (type `false`) will always evaluate to true. | This condition always evaluates to true | Variable `off` (type `false`) is never `true`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
+            "11:76 impossible-condition Impossible condition: variable `off` (type `false`) will always evaluate to `false`. | This condition always evaluates to `false` | Variable `off` (type `false`) is never `true`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
+            "11:76 impossible-condition This loop condition (type `false`) will always evaluate to `false`. | This condition is always `false`, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
+            "11:102 impossible-condition Impossible condition: variable `on` (type `true`) will always evaluate to `false`. | This condition always evaluates to `false` | Variable `on` (type `true`) is never `false`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
+            "11:102 impossible-condition This loop condition (type `false`) will always evaluate to `false`. | This condition is always `false`, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
+            "11:128 redundant-condition Redundant condition: variable `on` (type `true`) will always evaluate to `true`. | This condition always evaluates to `true` | Variable `on` (type `true`) is never `false`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
+            "12:65 redundant-condition Redundant condition: variable `off` (type `false`) will always evaluate to `true`. | This condition always evaluates to `true` | Variable `off` (type `false`) is never `true`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
+            "13:73 redundant-condition Redundant condition: variable `off` (type `false`) will always evaluate to `true`. | This condition always evaluates to `true` | Variable `off` (type `false`) is never `true`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
             "13:73 redundant-logical-operation Redundant `||` operation: left operand is always `false` and right operand is evaluated. | Left operand is always `false` | Right operand is evaluated | The `||` operator will always return the boolean value of the right-hand side in this case. | Consider simplifying this expression to just the right operand.",
+        ]
+    );
+}
+
+/// A null check or a type check that always or never holds speaks of the `bool` it is: always `true` or always
+/// `false`. PHP keeps its own wording.
+#[test]
+fn a_null_or_type_check_that_always_or_never_holds_speaks_of_its_bool() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int isNull(int x) { while (x == null) { return 1; } return 0; }\n    public static int notNull(int x) { while (x != null) { return 1; } return 0; }\n    public static int known(int? x) { if (x == null) { while (x != null) { return 1; } } return 0; }\n    public static int other() { const on = true; while (on == false) { return 1; } return 0; }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function isNull(int $x): int { while ($x === null) { return 1; } return 0; }\n    public static function notNull(int $x): int { while ($x !== null) { return 1; } return 0; }\n    public static function known(?int $x): int { if ($x === null) { while ($x !== null) { return 1; } } return 0; }\n    public static function other(): int { $on = true; while ($on === false) { return 1; } return 0; }\n}\n";
+    let checks = |analyzed| -> Vec<String> {
+        worded(analyzed, &[]).into_iter().filter(|line| line.contains("-type-comparison ")).collect()
+    };
+
+    assert_eq!(
+        checks(("src/Demo/Report.php", php)),
+        [
+            "7:57 impossible-null-type-comparison Impossible condition: variable `$x` (type `int`) can never be `null`. | This condition always evaluates to false | Variable `$x` (type `int`) does not include `null`. | The condition checking if `$x` is `null` will always be false. Remove or refactor the condition.",
+            "8:58 impossible-null-type-comparison Impossible condition: variable `$x` (type `int`) will always be `null`. | This condition always evaluates to false | Variable `$x` (type `int`) is already known to be `null`, so asserting it's not `null` is impossible. | The condition checking if `$x` is not `null` will always be false. Review the variable's state or condition.",
+            "9:76 redundant-type-comparison Redundant condition: variable `$x` (type `null`) is already known to be `null`. | This condition always evaluates to true | The type of variable `$x` (type `null`) already satisfies the condition that it is `null`. This check is redundant. | This condition is always true and the associated code block will always execute if reached. Consider simplifying.",
+            "10:62 impossible-type-comparison Impossible condition: variable `$on` (type `true`) can never be `false`. | This condition always evaluates to false | The type of variable `$on` (type `true`) is incompatible with the assertion that it is `false`. | This condition is impossible and the associated code block will never execute. Review the types and condition logic.",
+        ]
+    );
+    assert_eq!(
+        checks(("src/Demo/Report.sharp", sharp)),
+        [
+            "5:46 impossible-null-type-comparison Impossible condition: variable `x` (type `int`) can never be `null`. | This condition always evaluates to `false` | Variable `x` (type `int`) does not include `null`. | The condition checking if `x` is `null` will always be `false`. Remove or refactor the condition.",
+            "6:47 impossible-null-type-comparison Impossible condition: variable `x` (type `int`) will always be `null`. | This condition always evaluates to `false` | Variable `x` (type `int`) is already known to be `null`, so asserting it's not `null` is impossible. | The condition checking if `x` is not `null` will always be `false`. Review the variable's state or condition.",
+            "7:63 redundant-type-comparison Redundant condition: variable `x` (type `null`) is already known to be `null`. | This condition always evaluates to `true` | The type of variable `x` (type `null`) already satisfies the condition that it is `null`. This check is redundant. | This condition is always `true` and the associated code block will always execute if reached. Consider simplifying.",
+            "8:57 impossible-type-comparison Impossible condition: variable `on` (type `true`) can never be `false`. | This condition always evaluates to `false` | The type of variable `on` (type `true`) is incompatible with the assertion that it is `false`. | This condition is impossible and the associated code block will never execute. Review the types and condition logic.",
         ]
     );
 }

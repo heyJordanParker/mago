@@ -51,6 +51,7 @@ use crate::context::block::BlockContext;
 use crate::context::scope::var_has_root;
 use crate::resolver::property::resolve_declared_property;
 use crate::utils::names::display_atomic;
+use crate::utils::names::display_bool;
 use crate::utils::names::display_variable_name;
 
 pub mod assertion_reconciler;
@@ -1512,10 +1513,11 @@ fn report_impossible_issue<A>(
     };
 
     let sharp = context.dialect.is_sharp();
+    let never = display_bool(context, false);
     let (issue_kind, main_message_verb, specific_note, specific_help) = match assertion {
         Assertion::Truthy => (
             IssueCode::ImpossibleCondition,
-            "will always evaluate to false".to_owned(),
+            format!("will always evaluate to {never}"),
             if sharp {
                 format!("Variable {subject_desc} is never `true`, so this condition is always `false`.")
             } else {
@@ -1525,7 +1527,7 @@ fn report_impossible_issue<A>(
         ),
         Assertion::Falsy => (
             IssueCode::ImpossibleCondition,
-            "will always evaluate to false".to_owned(),
+            format!("will always evaluate to {never}"),
             if sharp {
                 format!("Variable {subject_desc} is never `false`, so this condition is always `false`.")
             } else {
@@ -1538,14 +1540,14 @@ fn report_impossible_issue<A>(
             "can never be `null`".to_owned(),
             format!("Variable {subject_desc} does not include `null`."),
             format!(
-                "The condition checking if `{key}` is `null` will always be false. Remove or refactor the condition.",
+                "The condition checking if `{key}` is `null` will always be {never}. Remove or refactor the condition.",
             ),
         ),
         Assertion::IsNotType(TAtomic::Null) => (
             IssueCode::ImpossibleNullTypeComparison,
             "will always be `null`".to_owned(),
             format!("Variable {subject_desc} is already known to be `null`, so asserting it's not `null` is impossible."),
-            format!("The condition checking if `{key}` is not `null` will always be false. Review the variable's state or condition."),
+            format!("The condition checking if `{key}` is not `null` will always be {never}. Review the variable's state or condition."),
         ),
         Assertion::HasArrayKey(array_key_assertion) => (
             IssueCode::ImpossibleKeyCheck,
@@ -1577,7 +1579,7 @@ fn report_impossible_issue<A>(
         issue_kind,
         Issue::warning(format!("Impossible condition: variable {subject_desc} {main_message_verb}."))
             .with_annotation(
-                Annotation::primary(*span).with_message("This condition always evaluates to false".to_string()),
+                Annotation::primary(*span).with_message(format!("This condition always evaluates to {never}")),
             )
             .with_note(specific_note)
             .with_help(specific_help),
@@ -1602,6 +1604,7 @@ fn report_redundant_issue<A>(
     };
 
     let sharp = context.dialect.is_sharp();
+    let always = display_bool(context, true);
     let (issue_kind, main_message_verb, specific_note, specific_help) = match assertion {
         Assertion::IsIsset | Assertion::IsEqualIsset => (
             IssueCode::RedundantIssetCheck,
@@ -1611,7 +1614,7 @@ fn report_redundant_issue<A>(
         ),
         Assertion::Truthy => (
             IssueCode::RedundantCondition,
-            "will always evaluate to true".to_owned(),
+            format!("will always evaluate to {always}"),
             if sharp {
                 format!("Variable {subject_desc} is never `false`, so this condition is always `true`.")
             } else {
@@ -1621,7 +1624,7 @@ fn report_redundant_issue<A>(
         ),
         Assertion::Falsy => (
             IssueCode::RedundantCondition,
-            "will always evaluate to true".to_owned(),
+            format!("will always evaluate to {always}"),
             if sharp {
                 format!("Variable {subject_desc} is never `true`, so this condition is always `true`.")
             } else {
@@ -1663,7 +1666,7 @@ fn report_redundant_issue<A>(
             IssueCode::RedundantTypeComparison,
             format!("is already known to be `{assertion_atom}`"),
             format!("The type of variable {subject_desc} already satisfies the condition that it is `{assertion_atom}`. This check is redundant."),
-            "This condition is always true and the associated code block will always execute if reached. Consider simplifying.".to_owned()
+            format!("This condition is always {always} and the associated code block will always execute if reached. Consider simplifying.")
         ),
     };
 
@@ -1671,7 +1674,7 @@ fn report_redundant_issue<A>(
         issue_kind,
         Issue::help(format!("Redundant condition: variable {subject_desc} {main_message_verb}."))
             .with_annotation(
-                Annotation::primary(*span).with_message("This condition always evaluates to true".to_string()),
+                Annotation::primary(*span).with_message(format!("This condition always evaluates to {always}")),
             )
             .with_note(specific_note)
             .with_help(specific_help),
