@@ -160,13 +160,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for If<'arena> {
             }
         }
 
-        check_for_paradox(
-            &mut context.collector,
-            &block_context.clauses,
-            &if_clauses,
-            self.condition.span(),
-            &context.settings.algebra_thresholds(),
-        );
+        check_for_paradox(context, &block_context.clauses, &if_clauses, self.condition.span());
 
         if_clauses = saturate_clauses(if_clauses.iter(), &context.settings.algebra_thresholds());
         let combined_clauses = if block_context.clauses.is_empty() {
@@ -821,13 +815,7 @@ where
         entry_clauses.push(Rc::new(clause));
     }
 
-    check_for_paradox(
-        &mut context.collector,
-        &entry_clauses,
-        &else_if_clauses,
-        else_if_clause.0.span(),
-        &context.settings.algebra_thresholds(),
-    );
+    check_for_paradox(context, &entry_clauses, &else_if_clauses, else_if_clause.0.span());
 
     let else_if_clauses = saturate_clauses(else_if_clauses.iter(), &context.settings.algebra_thresholds());
     else_if_block_context.clauses = saturate_clauses(

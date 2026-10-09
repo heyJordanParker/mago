@@ -3566,7 +3566,7 @@ fn check_class_like_properties<'ctx, A>(
                         Annotation::secondary(parent_property_span)
                             .with_message(format!("Declared `{parent_visibility}` here.")),
                     )
-                    .with_note("An override keeps the access level of the property it replaces, as spec section 6.1 says.")
+                    .with_note("An override keeps the access level of the property it replaces.")
                     .with_help(format!("Declare the override `{parent_visibility}`.")),
                 );
             }

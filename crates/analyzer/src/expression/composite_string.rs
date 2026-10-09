@@ -100,7 +100,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for CompositeString<'arena> {
                         .with_annotation(
                             Annotation::primary(part.span()).with_message(format!("This has type `{part_type_str}`")),
                         )
-                        .with_note("Spec section 24 refuses each use of an `Any` or `Any?` until it is checked.")
+                        .with_note("PHP# refuses each use of an `Any` or `Any?` until it is checked.")
                         .with_help("Check what the value is with `is`, `as` or `match` before the template shows it."),
                 );
             }
