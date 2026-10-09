@@ -2344,7 +2344,10 @@ fn list_wrap_of_a_list_is_refused_once() {
     let sharp = "namespace Demo;\n\nclass Rows\n{\n    public List<List<int>> read(List<int> numbers)\n    {\n        List<List<int>> rows = List.wrap(numbers);\n        return rows;\n    }\n}\n";
 
     assert_eq!(issues(("src/Demo/Rows.sharp", sharp), &[]), ["7:42 invalid-argument"]);
-    assert_eq!(messages(("src/Demo/Rows.sharp", sharp), &[]), ["T is List<int>, itself a list; write `numbers is List<int> one ? [one] : numbers`"]);
+    assert_eq!(
+        messages(("src/Demo/Rows.sharp", sharp), &[]),
+        ["T is List<int>, itself a list; write `numbers is List<int> one ? [one] : numbers`"]
+    );
 }
 
 /// A value from plain PHP typed `mixed` arrives as `Any?`, which could hold a list.
@@ -5534,9 +5537,7 @@ fn an_inherited_method_takes_the_type_arguments_of_the_header() {
 
     assert_eq!(
         messages(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING), ("src/Demo/Tray.sharp", tray)]),
-        [
-            "Invalid argument type for argument #1 of `Tray.replace`: expected `List<Order>`, but found `List<Invoice>`."
-        ]
+        ["Invalid argument type for argument #1 of `Tray.replace`: expected `List<Order>`, but found `List<Invoice>`."]
     );
 }
 
