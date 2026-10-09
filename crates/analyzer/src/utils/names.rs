@@ -16,6 +16,7 @@ use mago_names::kind::NameKind;
 use mago_names::short_name;
 use mago_syntax_core::utils::is_part_of_identifier;
 use mago_word::Word;
+use mago_word::ascii_lowercase_word;
 use mago_word::word;
 
 use crate::context::Context;
@@ -34,17 +35,21 @@ where
     }
 }
 
-/// Returns the case-preserved name of the class-like `name` as a `.sharp` file names it: its short name, or, when
-/// another class-like of the codebase has the same short name, its full name with `.` between its parts, so
-/// `Billing.Order` and `App.Orders.Order` stay apart.
+/// Returns the case-preserved name of the class-like `name` as a `.sharp` file names it: the name the file's import
+/// gives it, as in `Rx` for `import Sharp.Text.Regex as Rx;` and `Order` for `import App.Orders.Order;`. A class the
+/// file doesn't import is named by its short name, or, when another class-like of the codebase has the same short name,
+/// by its full name with `.` between its parts, so `Billing.Order` and `App.Orders.Order` stay apart.
 fn sharp_class_like_name<A>(context: &Context<'_, '_, A>, name: Word) -> String
 where
     A: Arena,
 {
     let name = context.codebase.get_class_like(name.as_bytes()).map_or(name, |m| m.original_name);
+    let full_name = mago_bytes::trim_start_byte(name.as_bytes(), b'\\');
 
-    if context.shares_short_name(name) {
-        String::from_utf8_lossy(mago_bytes::trim_start_byte(name.as_bytes(), b'\\')).replace('\\', ".")
+    if let Some(imported_name) = context.imported_names.get(&ascii_lowercase_word(full_name)) {
+        imported_name.to_string()
+    } else if context.shares_short_name(name) {
+        String::from_utf8_lossy(full_name).replace('\\', ".")
     } else {
         short_name(name)
     }
@@ -83,14 +88,18 @@ where
     Some(format!("Add {imports} to the file."))
 }
 
-/// Whether the analyzed file binds the short name of the class-like `name` to it, as spec section 23 binds a name: by
-/// an import, by declaring it, or by sharing its namespace. A class-like directly in `Sharp` is imported by default,
-/// unless the file imports or declares another class-like of its short name.
+/// Whether the analyzed file binds a name to the class-like `name`, as spec section 23 binds a name: by an import, under
+/// its short name or the name after `as`, by declaring it, or by sharing its namespace. A class-like directly in `Sharp`
+/// is imported by default, unless the file imports or declares another class-like of its short name.
 fn binds_class_like<A>(context: &Context<'_, '_, A>, name: Word) -> bool
 where
     A: Arena,
 {
     let name = mago_bytes::trim_start_byte(name.as_bytes(), b'\\');
+    if context.imported_names.contains_key(&ascii_lowercase_word(name)) {
+        return true;
+    }
+
     let (bound, imported) = context.scope.resolve(NameKind::Default, short_name(name));
     if bound.eq_ignore_ascii_case(name) {
         return true;
@@ -434,9 +443,10 @@ where
     }
 }
 
-/// The member `member_name` of the class `class_name` as code the analyzed file writes: `Status.cases()` by the short
-/// name an import binds in a `.sharp` file, as PHP# refuses a full name in code (spec section 23), and `Status::cases()`
-/// in PHP. Prose names a member with [`display_member`], whose dotted name tells two classes of one short name apart.
+/// The member `member_name` of the class `class_name` as code the analyzed file writes: `Status.cases()` in a `.sharp`
+/// file, by the name an import binds, and `Status::cases()` in PHP. The class is named as [`sharp_class_like_name`]
+/// names it, cut to its last part: PHP# refuses a full name in code (spec section 23), so the dotted name that tells two
+/// classes of one short name apart in prose would not compile here.
 #[must_use]
 pub(crate) fn display_code_member<A>(
     context: &Context<'_, '_, A>,
@@ -447,7 +457,9 @@ where
     A: Arena,
 {
     if context.dialect.is_sharp() {
-        display_sharp_member(class_name, member_name)
+        let class_name = sharp_class_like_name(context, class_name);
+
+        display_sharp_member(class_name.rsplit('.').next().unwrap_or_default(), member_name)
     } else {
         display_member(context, class_name, member_name)
     }

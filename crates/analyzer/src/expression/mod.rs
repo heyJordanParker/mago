@@ -13,7 +13,6 @@ use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_named_object;
 use mago_codex::ttype::get_never;
 use mago_codex::ttype::union::TUnion;
-use mago_names::display_sharp_member;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_reporting::Level;
@@ -56,6 +55,7 @@ use crate::statement::attributes::analyze_class_like_attributes;
 use crate::statement::class_like::analyze_class_like;
 use crate::statement::class_like::override_attribute;
 use crate::utils::misc::check_for_paradox;
+use crate::utils::names::display_code_member;
 use crate::utils::names::display_member;
 use crate::utils::names::display_missing_imports;
 
@@ -560,7 +560,7 @@ where
         declared.sort_by_key(|case| case.span.start.offset);
         for case in declared {
             if cases.iter().any(|(enum_name, left)| *enum_name == name && left.is_none_or(|left| left == case.name)) {
-                missing.push(display_sharp_member(metadata.original_name, case.name));
+                missing.push(display_code_member(context, metadata.original_name, case.name));
                 if !named.contains(&metadata.original_name) {
                     named.push(metadata.original_name);
                 }

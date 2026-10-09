@@ -63,6 +63,9 @@ where
     pub(super) comments: &'arena [Trivia<'arena>],
     pub(super) settings: &'ctx Settings,
     pub(super) scope: NamespaceScope,
+    /// The name each import of a `.sharp` file gives its class, as the file writes it: the name after `as`, or else the
+    /// last segment of the class name. Keyed by the lowercase full name of the class.
+    pub(super) imported_names: WordMap<Word>,
     pub(super) collector: Collector<'ctx, 'arena, A>,
     pub(super) statement_span: Span,
     pub(super) plugin_registry: &'ctx PluginRegistry,
@@ -103,6 +106,7 @@ where
             comments,
             settings,
             scope: NamespaceScope::default(),
+            imported_names: WordMap::default(),
             statement_span,
             collector,
             plugin_registry,

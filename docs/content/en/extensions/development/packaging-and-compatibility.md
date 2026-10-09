@@ -41,7 +41,7 @@ Example `composer.json`:
   "type": "library",
   "require": {
     "php": "^8.1",
-    "heyjordanparker/mago-sharp": "^0.1"
+    "heyjordanparker/mago-sharp": "^0.2"
   },
   "autoload": {
     "psr-4": {
