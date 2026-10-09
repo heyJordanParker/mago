@@ -216,8 +216,9 @@ impl<'analysis> Types<'analysis> {
     /// The metadata of the method `method` of the fully qualified class name `class` that the engine reads on a call:
     /// the bounds of its own type parameters, which a call from plain PHP gives it, and a type text list with one entry
     /// per parameter that a call from plain PHP checks its argument against. An entry is the parameter's type when part
-    /// of it is a class with type arguments or a type parameter, and `Any?` otherwise. Each half is None when the method
-    /// declares no type parameter, or no parameter needs a check.
+    /// of it is a PHP# class with type arguments or a type parameter, and `Any?` otherwise: plain PHP's generics are
+    /// erased, as [`Self::call_type_arguments`] erases them. Each half is None when the method declares no type
+    /// parameter, or no parameter needs a check.
     pub(crate) fn method_metadata(&self, class: &[u8], method: &[u8]) -> (Option<String>, Option<String>) {
         let Some(metadata) = self.codebase.get_method(class, method) else {
             return (None, None);
@@ -232,6 +233,10 @@ impl<'analysis> Types<'analysis> {
             r#type.types.iter().any(|atomic| match atomic {
                 TAtomic::Object(TObject::Named(object)) => {
                     object.get_type_parameters().is_some_and(|arguments| !arguments.is_empty())
+                        && self
+                            .codebase
+                            .get_class_like(object.name.as_bytes())
+                            .is_some_and(|class| class.flags.is_sharp())
                 }
                 TAtomic::GenericParameter(_) => true,
                 _ => false,

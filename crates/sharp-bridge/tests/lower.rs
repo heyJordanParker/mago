@@ -2787,9 +2787,6 @@ fn a_generic_class_type_is_its_class_and_a_class_value_type_is_string() {
                 null
                 null
                 null
-              SHARP_TYPE_ARGS
-                null
-                ZVAL "Lib.PaginatedList<Lib.Order>"
             ZVAL [256] "Lib\\PaginatedList"
         "#}
     );
@@ -3563,9 +3560,10 @@ fn a_bound_writes_a_type_parameter_of_its_own_class_as_any() {
 /// its argument list: a `SHARP_TYPE_ARGS` without a `new`. A type parameter of the class the call is in is `$` and its
 /// index, and one of the method the call is in is `#` and its index, which the engine reads from the method's own
 /// call. A lambda writes them the same way, and the engine reads them from the method's call the lambda captured them
-/// from. A method whose call needs its type arguments, or whose parameter names a class with type
+/// from. A method whose call needs its type arguments, or whose parameter names a PHP# class with type
 /// arguments or a type parameter, ends its parameter list with its metadata: a `SHARP_TYPE_ARGS` of the bounds of its
-/// own type parameters and a type text list with each parameter's type, `Any?` for one the engine never checks.
+/// own type parameters and a type text list with each parameter's type, `Any?` for one the engine never checks. Plain
+/// PHP's generics are erased, so a parameter of a plain PHP class with type arguments is never checked.
 #[test]
 fn a_generic_call_carries_its_type_arguments_and_a_generic_method_its_metadata() {
     let lowered = Lowered::with(
@@ -3597,6 +3595,8 @@ fn a_generic_call_carries_its_type_arguments_and_a_generic_method_its_metadata()
             public Function<Box<T>()> later<T>() => () => new Box<T>();
 
             public void show(PaginatedList<Order> page, int count) { }
+
+            public void keep(Holder<Order> holder) { }
         }
 
         public class PaginatedList<TItem : DatabaseEntity>
@@ -3608,10 +3608,13 @@ fn a_generic_call_carries_its_type_arguments_and_a_generic_method_its_metadata()
             public Pair<TItem, TOther> again<TOther>() => this.pairWith<TOther>();
         }
     "},
-        &[(
-            "src/App/Entities.php",
-            "<?php namespace App; abstract class DatabaseEntity {} final class Order extends DatabaseEntity {}",
-        )],
+        &[
+            (
+                "src/App/Entities.php",
+                "<?php namespace App; abstract class DatabaseEntity {} final class Order extends DatabaseEntity {}",
+            ),
+            ("src/App/Holder.php", "<?php namespace App; /** @template T */ final class Holder {}"),
+        ],
     );
 
     let call = |count: u32, type_arguments: &str| {
@@ -3710,6 +3713,7 @@ fn a_generic_call_carries_its_type_arguments_and_a_generic_method_its_metadata()
     assert_eq!(lowered.parameters_of("pairWith"), format!("PARAM_LIST\n{}", metadata(r#"ZVAL "Any?""#, "null")));
     assert!(!lowered.parameters_of("run").contains("SHARP_TYPE_ARGS"));
     assert!(!lowered.parameters_of("__construct").contains("SHARP_TYPE_ARGS"));
+    assert!(!lowered.parameters_of("keep").contains("SHARP_TYPE_ARGS"), "{}", lowered.parameters_of("keep"));
 }
 
 /// A value of a type parameter is a value of its bound, so a generic method called on it carries its type arguments as
