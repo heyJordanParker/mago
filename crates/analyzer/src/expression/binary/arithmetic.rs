@@ -228,9 +228,11 @@ where
             .with_note(
                 "Performing arithmetic operations on `false` typically results in `0`."
             )
-            .with_help(
+            .with_help(if context.dialect.is_sharp() {
+                "Ensure the left operand is not `false` before the operation."
+            } else {
                 "Ensure the left operand is non-falsy before the operation, or explicitly cast if coercion is intended."
-            ),
+            }),
         );
     }
 
@@ -264,9 +266,11 @@ where
             .with_note(
                 "Performing arithmetic operations on `false` typically results in `0`."
             )
-            .with_help(
+            .with_help(if context.dialect.is_sharp() {
+                "Ensure the right operand is not `false` before the operation."
+            } else {
                 "Ensure the right operand is non-falsy before the operation, or explicitly cast if coercion is intended."
-            ),
+            }),
         );
     }
 

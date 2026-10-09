@@ -4,8 +4,8 @@ version = "0.2.0"
 edition = "2024"
 authors = ["Seifeddine Gmati <azjezz@carthage.software>"]
 license = "MIT OR Apache-2.0"
-description = "A comprehensive suite of PHP tooling inspired by Rust’s approach, providing parsing, linting, formatting, and more through a unified CLI and library interface."
-homepage = "https://mago.carthage.software"
+description = "PHP#'s checker and toolchain: checks PHP and PHP# code, compiles PHP#, and lints and formats PHP."
+homepage = "https://github.com/heyJordanParker/mago-sharp"
 repository = "https://github.com/heyJordanParker/mago-sharp"
 rust-version = "1.97.0"
 exclude = ["composer", "scripts"]
@@ -15,7 +15,7 @@ package.edition = "2024"
 package.authors = ["Seifeddine Gmati <azjezz@carthage.software>"]
 package.license = "MIT OR Apache-2.0"
 package.version = "0.2.0"
-package.homepage = "https://mago.carthage.software"
+package.homepage = "https://github.com/heyJordanParker/mago-sharp"
 package.repository = "https://github.com/heyJordanParker/mago-sharp"
 package.rust-version = "1.97.0"
 members = ["crates/*", "docs"]
@@ -190,6 +190,7 @@ mago-orchestrator = { path = "crates/orchestrator", version = "0.2.0" }
 mago-server = { path = "crates/server", version = "0.2.0" }
 mago-extension = { path = "crates/extension", version = "0.2.0" }
 mago-sharp-bridge = { path = "crates/sharp-bridge", version = "0.2.0" }
+mago-sharp-lean = { path = "crates/sharp-lean", version = "0.2.0" }
 mago-build-id = { path = "crates/build-id", version = "0.2.0" }
 tracing = { version = "0.1.40" }
 foldhash = "0.2"
@@ -278,6 +279,7 @@ mago-guard = { workspace = true, features = ["serde"] }
 mago-orchestrator = { workspace = true }
 mago-server = { workspace = true }
 mago-sharp-bridge = { workspace = true }
+mago-sharp-lean = { workspace = true }
 mago-extension = { workspace = true }
 serde = { workspace = true }
 clap = { workspace = true }

@@ -331,6 +331,18 @@ where
         return Ok(());
     };
 
+    let patterns = context.patterns.len();
+    match node {
+        Node::Expression(Expression::Is(is)) => context.patterns.push((Some(is.is), is.pattern)),
+        Node::Expression(Expression::PatternMatch(pattern_match))
+        | Node::Statement(Statement::PatternMatch(pattern_match)) => {
+            context.patterns.extend(pattern_match.arms.iter().filter_map(|arm| match arm {
+                PatternMatchArm::Pattern(arm) => Some((None, arm.pattern)),
+                PatternMatchArm::Default(_) => None,
+            }));
+        }
+        _ => {}
+    }
     context.temporaries += temporaries;
     let (result, issues) = context.record(|context| match php {
         Node::Expression(expression) => expression.analyze(context, block_context, artifacts),
@@ -338,6 +350,7 @@ where
         _ => Ok(()),
     });
     context.temporaries -= temporaries;
+    context.patterns.truncate(patterns);
 
     // The PHP of a pattern calls a type test that no source the user wrote calls. It is the PHP# syntax itself, so it is
     // never replaced by syntax. A properties pattern's `is_object` is its null check, which a value that cannot be null

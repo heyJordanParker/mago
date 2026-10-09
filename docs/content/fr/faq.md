@@ -8,37 +8,39 @@ nav_section = "Référence"
 
 ## Pourquoi le nom « Mago » ?
 
-Le projet s'appelait à l'origine « fennec », d'après le fennec, renard du désert d'Afrique du Nord. Un conflit de nom avec un autre outil a forcé un changement.
+Le nom vient de Mago, le projet amont, qui s'appelait d'abord « fennec », d'après le fennec, renard du désert d'Afrique du Nord. Un conflit de nom avec un autre outil a forcé un changement.
 
-Nous avons choisi « Mago » pour rester proches de nos racines chez Carthage Software. Mago de Carthage était un écrivain carthaginois antique connu comme le « Père de l'Agriculture ». Tout comme il cultivait la terre, l'outil vise à aider les développeurs à cultiver leurs bases de code.
+Carthage Software, qui maintient le projet amont, l'a nommé d'après Mago de Carthage, un écrivain carthaginois antique connu comme le « Père de l'Agriculture ». Tout comme il cultivait la terre, l'outil vise à aider les développeurs à cultiver leurs bases de code.
 
-Le nom a un double sens utile. En espagnol et en italien, « mago » signifie « magicien » ou « sorcier ». Le logo capture les deux : un fennec coiffé d'un chapeau et d'une robe de sorcier, avec l'ancien symbole carthaginois de Tanit sur ses vêtements.
+Le nom a un double sens utile. En espagnol et en italien, « mago » signifie « magicien » ou « sorcier ». Le logo, dessiné pour le projet amont Mago, capture les deux : un fennec coiffé d'un chapeau et d'une robe de sorcier, avec l'ancien symbole carthaginois de Tanit sur ses vêtements.
 
 ## Comment prononce-t-on Mago ?
 
 `/ˈmɑːɡoʊ/`, « ma-go ». Deux syllabes : « ma » comme dans « maman », « go » comme dans « go ».
 
-## Mago implémentera-t-il un LSP ?
+## mago-sharp fournit-il un serveur de langage ?
 
-Oui. L'implémentation du Language Server Protocol est prévue pour la `2.0.0`. Elle était initialement planifiée pour la `1.0.0`, mais a été décalée afin que le LSP arrive complet plutôt que comme une première version minimale.
+Non. mago-sharp n'implémente pas le Language Server Protocol. Utilisez-le en ligne de commande ou en CI. La page [Configuration](/guide/configuration/) décrit le schéma JSON que les éditeurs utilisent pour valider `mago.toml`, ainsi que les liens de terminal qui ouvrent un fichier signalé dans votre éditeur.
 
-Pour le détail, voir le billet de blog [Why Mago 1.0.0 Won't Ship With an LSP](https://carthage.software/en/blog/article/Why-Mago-1-0-0-Won-t-Ship-With-an-LSP).
+## mago-sharp propose-t-il des extensions d'éditeur (VS Code, etc.) ?
 
-## Mago proposera-t-il des extensions d'éditeur (VS Code, etc.) ?
+Non. mago-sharp ne fournit aucune extension propre à un éditeur.
 
-Non. Le projet se concentrera sur l'implémentation du standard LSP et ne maintiendra pas d'extensions spécifiques à un éditeur. Les éditeurs qui prennent en charge l'intégration LSP (Helix, Neovim via lspconfig, VS Code avec un client générique) fonctionneront avec Mago. Nous encourageons la communauté à construire des wrappers spécifiques à un éditeur et serons heureux de mettre en avant les plus appréciés sur le site.
+## mago-sharp prend-il en charge des plugins d'analyseur ?
 
-## Mago prendra-t-il en charge des plugins d'analyseur ?
+Oui, par des extensions. Une extension est un programme externe que mago-sharp lance depuis `[extension-hosts]` dans `mago.toml` et avec lequel il communique par un protocole binaire de workers. Elle peut ajouter des règles au linter et des plugins à l'analyseur. Le formateur et le guard n'ont pas d'API d'extension. mago-sharp fournit un SDK PHP pour écrire des extensions : l'espace de noms `Mago\Sdk` du paquet Composer `heyjordanparker/mago-sharp`. La page [Extensions](/extensions/overview/) décrit le protocole, le SDK et un exemple complet.
 
-Oui, mais pas avant la `1.0.0`. Le plan est que les plugins soient écrits en Rust, compilés en WASM, et chargés par Mago à l'exécution. Ce travail aura lieu après la sortie de la `1.0.0`.
+## Quels outils mago-sharp inclut-il ?
 
-## Quels autres outils PHP Mago prévoit-il de remplacer ?
+Un seul binaire fournit :
 
-La vision à plus long terme est que Mago soit un utilitaire complet de qualité et de développement pour PHP. Le formateur, le linter et l'analyseur sont la priorité pour la `1.0.0`. Au-delà, les outils prévus incluent :
+- `mago lint`, le linter.
+- `mago analyze`, l'analyseur statique, pour PHP et PHP#.
+- `mago format`, le formateur.
+- `mago guard`, qui fait respecter les règles d'architecture entre couches.
+- `mago compile`, qui compile les fichiers PHP# pour le moteur PHP#.
 
-- Un gestionnaire de versions PHP.
-- Un installateur d'extensions PHP.
-- Un assistant de migration pour mettre à niveau les versions de PHP, les frameworks ou les bibliothèques.
+`mago fix` applique les corrections du guard, de l'analyseur, du linter et du formateur jusqu'à ce qu'aucun d'eux ne change plus rien.
 
 ## Mago implémentera-t-il une alternative à Composer ?
 

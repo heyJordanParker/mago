@@ -1,6 +1,7 @@
 //! The single-workspace [`Server`]: the transport-agnostic core that owns one
 //! workspace's file database and analysis service, and answers queries against them.
 
+use foldhash::HashMap;
 use foldhash::HashSet;
 
 use mago_analyzer::analysis_result::AnalysisResult;
@@ -14,7 +15,9 @@ use mago_orchestrator::error::OrchestratorError;
 use mago_orchestrator::service::incremental_analysis::IncrementalAnalysisService;
 use mago_orchestrator::service::incremental_analysis::compile::Compilation;
 use mago_reporting::Issue;
+use mago_reporting::IssueCollection;
 use mago_sharp_bridge::unit::Input;
+use mago_sharp_lean::Translation;
 
 use crate::error::ServerError;
 use crate::settings::Settings;
@@ -108,16 +111,18 @@ impl Server {
 
     /// Compile each `.sharp` file of the last analysis into the bytes of its `.sharpc` file, or the errors that
     /// refuse it. `stamp` gives the size, modification time and hash of the file at a workspace-relative path, or
-    /// none when no file is there.
+    /// none when no file is there. `prove` gets the Lean translation of every accepted file and returns the issues
+    /// of each file whose law is not proved.
     ///
     /// # Errors
     ///
-    /// Returns [`ServerError`] when no analysis ran yet, or when re-analyzing a file or `stamp` fails.
+    /// Returns [`ServerError`] when no analysis ran yet, or when re-analyzing a file, `stamp` or `prove` fails.
     pub fn compile(
         &mut self,
         stamp: impl FnMut(&[u8]) -> std::io::Result<Option<Input>>,
+        prove: impl FnOnce(Vec<Translation>) -> std::io::Result<HashMap<FileId, IssueCollection>>,
     ) -> Result<Vec<(FileId, Compilation)>, ServerError> {
-        self.service.compile(stamp).map_err(ServerError::from)
+        self.service.compile(stamp, prove).map_err(ServerError::from)
     }
 
     /// Run one analysis pass with the node-analysis hooks only in the scope's files, and report

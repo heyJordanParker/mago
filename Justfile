@@ -4,10 +4,6 @@ template_dir := `mktemp -d`
 list:
     @just --list
 
-# Update sponsors data
-update-sponsors:
-    php scripts/update-sponsors-docs.php
-
 # Regenerate the analyzer issue codes.
 regen-analyzer-issue-codes:
     rm -f crates/analyzer/src/code.rs

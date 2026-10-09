@@ -189,7 +189,7 @@ use crate::unit::Read;
 
 pub(crate) mod checked;
 pub(crate) mod inline;
-mod types;
+pub(crate) mod types;
 
 use types::DeclarationKind;
 use types::Types;

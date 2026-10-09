@@ -155,7 +155,7 @@ public function bar(
 | `break-promoted-properties-list` | booléen | `true` | Toujours casser les listes de paramètres avec des propriétés promues. |
 | `parameter-attribute-on-new-line` | booléen | `true` | Mettre les attributs de paramètre sur leur propre ligne lorsque la liste de paramètres se casse (PER-CS 12.2). |
 | `line-before-binary-operator` | booléen | `true` | Lorsqu'une expression binaire se casse, placer l'opérateur sur la ligne suivante. |
-| `indent-binary-expression-continuation` | booléen | `false` | Indenter les lignes de continuation des expressions binaires dans les affectations. Disponible depuis 1.19. |
+| `indent-binary-expression-continuation` | booléen | `false` | Indenter les lignes de continuation des expressions binaires dans les affectations. |
 | `omit-redundant-arithmetic-binary-expression-parentheses` | booléen | `false` | Supprimer les parenthèses redondantes autour de l'arithmétique lorsque la comparaison ou la coalescence nulle préserve déjà le sens. |
 | `omit-redundant-bitwise-binary-expression-parentheses` | booléen | `false` | Supprimer les parenthèses redondantes autour des sous-expressions bit-à-bit lorsque la précédence préserve déjà le sens. |
 | `preserve-redundant-logical-binary-expression-parentheses` | booléen | `false` | Conserver les parenthèses écrites par l'auteur autour d'une sous-expression logique lorsque son parent est aussi logique. |
