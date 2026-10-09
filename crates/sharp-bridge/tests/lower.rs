@@ -424,9 +424,6 @@ fn a_file_declares_strict_types_then_its_namespace_and_classes() {
                 null
                 null
                 STMT_LIST
-                  SHARP_TYPE_ARGS
-                    null
-                    null
                 null
                 null
         "#}
@@ -457,9 +454,6 @@ fn a_file_without_a_namespace_declares_its_classes_globally() {
                 null
                 null
                 STMT_LIST
-                  SHARP_TYPE_ARGS
-                    null
-                    null
                 null
                 null
         "#}
@@ -502,9 +496,6 @@ fn a_method_is_a_public_function_with_its_return_type_after_its_parameters() {
                         ZVAL "extra"
                   ZVAL [1] "int"
                   null
-                SHARP_TYPE_ARGS
-                  null
-                  null
               null
               null
         "#}
@@ -546,9 +537,6 @@ fn a_field_is_a_property_group_of_one_property() {
                     null
                     null
                     null
-                null
-              SHARP_TYPE_ARGS
-                null
                 null
         "#}
     );
@@ -1441,9 +1429,6 @@ fn a_non_constant_initial_value_runs_at_the_start_of_the_constructor() {
                       ZVAL "start"
                 null
                 null
-              SHARP_TYPE_ARGS
-                null
-                null
         "#}
     );
 }
@@ -1493,9 +1478,6 @@ fn a_class_with_a_non_constant_initial_value_and_no_constructor_gets_one() {
                         ZVAL 1
                 null
                 null
-              SHARP_TYPE_ARGS
-                null
-                null
         "#}
     );
 }
@@ -1538,9 +1520,6 @@ fn a_get_only_property_gets_its_initial_value_in_the_constructor() {
                         ZVAL "this"
                       ZVAL "code"
                     ZVAL "none"
-                null
-                null
-              SHARP_TYPE_ARGS
                 null
                 null
         "#}
@@ -1634,9 +1613,6 @@ fn a_nullable_field_or_settable_auto_property_without_an_initial_value_defaults_
                         ZVAL "this"
                       ZVAL "limit"
                     ZVAL null
-                null
-                null
-              SHARP_TYPE_ARGS
                 null
                 null
         "#}
@@ -3106,11 +3082,11 @@ fn a_class_like_metadata_holds_its_header_type_arguments_and_its_bounds() {
     );
 }
 
-/// Every PHP# class-like ends with its metadata, a `SHARP_TYPE_ARGS` without a `new`, whose second text is its bounds:
-/// the type text of each type parameter's bound, `Any?` for one without a bound, and null for a class without type
-/// parameters. A generic class declares its hidden type-argument slot from it. `new` of
-/// the class is a `SHARP_TYPE_ARGS` over the `NEW`, whose text is the type arguments the checker found, each in its
-/// full dotted name. `new Self` gives the new object `this`'s type arguments, so its text is null. A type argument
+/// A PHP# generic class ends with its metadata, a `SHARP_TYPE_ARGS` without a `new` whose second text is its bounds:
+/// the type text of each type parameter's bound, `Any?` for one without a bound. It declares its hidden type-argument
+/// slot from it. A class without type parameters, whose header gives no type arguments, has no metadata. `new` of the
+/// class is a `SHARP_TYPE_ARGS` over the `NEW`, whose text is the type arguments the checker found, each in its full
+/// dotted name. `new Self` gives the new object `this`'s type arguments, so its text is null. A type argument
 /// that names a type parameter of the class writes it as `$` and its index, and the engine gives it `this`'s type
 /// argument at that index. One that names a method's own type parameter has a value only the call knows, so that `new`
 /// carries no type arguments yet.
@@ -3157,14 +3133,7 @@ fn new_of_a_generic_php_sharp_class_carries_its_type_arguments() {
               ZVAL "App.DatabaseEntity, Any?"
         "#}
     );
-    assert_eq!(
-        lowered.render(last_member(3)),
-        indoc! {"
-            SHARP_TYPE_ARGS
-              null
-              null
-        "}
-    );
+    assert_eq!(lowered.nodes()[last_member(3) as usize].kind, sharp_kind::SHARP_AST_METHOD);
     assert_eq!(
         lowered.body(),
         indoc! {r#"
@@ -3282,18 +3251,12 @@ fn abstract_and_final_classes_and_interfaces_are_class_declarations_with_their_f
                     null
                     ZVAL [1] "float"
                     null
-                  SHARP_TYPE_ARGS
-                    null
-                    null
                 null
                 null
               CLASS [32] "Unit" @8-10
                 null
                 null
                 STMT_LIST
-                  SHARP_TYPE_ARGS
-                    null
-                    null
                 null
                 null
               CLASS [1] "Measured" @12-15
@@ -3312,9 +3275,6 @@ fn abstract_and_final_classes_and_interfaces_are_class_declarations_with_their_f
                     null
                     null
                     ZVAL [1] "string"
-                    null
-                  SHARP_TYPE_ARGS
-                    null
                     null
                 null
                 null
@@ -3375,9 +3335,6 @@ fn a_static_class_is_a_final_class_whose_extern_method_calls_its_native_function
                             VAR
                               ZVAL "title"
                     ZVAL [1] "string"
-                    null
-                  SHARP_TYPE_ARGS
-                    null
                     null
                 null
                 null
@@ -3489,9 +3446,6 @@ fn a_header_is_the_parent_class_and_the_interface_name_list() {
                 NAME_LIST
                   ZVAL "Lib\\Named"
                 STMT_LIST
-                  SHARP_TYPE_ARGS
-                    null
-                    null
                 null
                 null
               CLASS "Page" @10-12
@@ -3499,9 +3453,6 @@ fn a_header_is_the_parent_class_and_the_interface_name_list() {
                 NAME_LIST
                   ZVAL "App\\Tenant\\Linkable"
                 STMT_LIST
-                  SHARP_TYPE_ARGS
-                    null
-                    null
                 null
                 null
         "#}
@@ -3548,15 +3499,7 @@ fn a_header_entry_with_type_arguments_is_its_class() {
                 null
         "#}
     );
-    assert_eq!(
-        members(&plain),
-        indoc! {"
-            STMT_LIST
-              SHARP_TYPE_ARGS
-                null
-                null
-        "}
-    );
+    assert_eq!(members(&plain), "STMT_LIST\n");
 }
 
 /// ```php
@@ -3612,9 +3555,6 @@ fn virtual_lowers_to_nothing_and_override_to_the_override_attribute() {
                         ATTRIBUTE
                           ZVAL "Override"
                           null
-                  SHARP_TYPE_ARGS
-                    null
-                    null
                 null
                 null
         "#}
@@ -3667,9 +3607,6 @@ fn an_override_of_a_property_with_no_type_has_no_type() {
                     ATTRIBUTE
                       ZVAL "Override"
                       null
-              SHARP_TYPE_ARGS
-                null
-                null
         "#}
     );
 }
@@ -3717,9 +3654,6 @@ fn an_override_of_an_override_of_a_property_with_no_type_has_no_type() {
                     ATTRIBUTE
                       ZVAL "Override"
                       null
-              SHARP_TYPE_ARGS
-                null
-                null
         "#}
     );
 }
@@ -3748,9 +3682,6 @@ fn an_override_of_an_override_of_a_typed_property_keeps_its_type() {
                     ATTRIBUTE
                       ZVAL "Override"
                       null
-              SHARP_TYPE_ARGS
-                null
-                null
         "#}
     );
 }
@@ -3835,9 +3766,6 @@ fn a_subclass_method_with_a_union_variadic_spreads_it_into_the_parent_method() {
                         ATTRIBUTE
                           ZVAL "Override"
                           null
-                  SHARP_TYPE_ARGS
-                    null
-                    null
                 null
                 null
         "#}
@@ -3971,9 +3899,6 @@ fn self_is_static_and_required_adds_no_flag() {
                   TYPE [15]
                   ZVAL [1] "int"
                 null
-              SHARP_TYPE_ARGS
-                null
-                null
         "#}
     );
 }
@@ -4097,9 +4022,6 @@ fn a_class_constant_is_a_class_constant_group_of_one_constant() {
                     null
                 null
                 null
-              SHARP_TYPE_ARGS
-                null
-                null
         "#}
     );
 }
@@ -4142,9 +4064,6 @@ fn a_union_typed_class_constant_has_its_type_union() {
                   ZVAL [1] "int"
                   ZVAL [1] "string"
                   ZVAL [1] "null"
-              SHARP_TYPE_ARGS
-                null
-                null
         "#}
     );
 }
@@ -7143,9 +7062,6 @@ fn attributes_are_attribute_lists_of_attribute_groups_on_their_declarations() {
                           ZVAL true
                           CONST
                             ZVAL [1] "PHP_INT_MAX"
-                SHARP_TYPE_ARGS
-                  null
-                  null
               ATTRIBUTE_LIST
                 ATTRIBUTE_GROUP
                   ATTRIBUTE
@@ -7781,9 +7697,6 @@ fn a_backed_enum_is_a_final_enum_class_with_its_backing_type_cases_and_methods()
                               ZVAL "active"
                     ZVAL "App\\Tenant\\Status"
                     null
-                  SHARP_TYPE_ARGS
-                    null
-                    null
                 ATTRIBUTE_LIST
                   ATTRIBUTE_GROUP
                     ATTRIBUTE
@@ -7864,9 +7777,6 @@ fn a_pure_enum_is_a_final_enum_class_of_unit_cases_without_a_backing_type() {
                               ARG_LIST
                     ZVAL [1] "int"
                     null
-                  SHARP_TYPE_ARGS
-                    null
-                    null
                 null
                 null
         "#}
@@ -7918,9 +7828,6 @@ fn an_int_backed_enum_is_a_final_enum_class_of_int_cases() {
                   ENUM_CASE
                     ZVAL "High"
                     ZVAL 2
-                    null
-                    null
-                  SHARP_TYPE_ARGS
                     null
                     null
                 null
@@ -7979,9 +7886,6 @@ fn an_enum_header_is_the_interface_name_list() {
                     ZVAL "a"
                     null
                     null
-                  SHARP_TYPE_ARGS
-                    null
-                    null
                 null
                 ZVAL [1] "string"
               CLASS [268435488] "Suit" @10-13
@@ -7992,9 +7896,6 @@ fn an_enum_header_is_the_interface_name_list() {
                   ENUM_CASE
                     ZVAL "Hearts"
                     null
-                    null
-                    null
-                  SHARP_TYPE_ARGS
                     null
                     null
                 null
@@ -8042,9 +7943,6 @@ fn an_enum_constant_is_a_class_constant_group_that_reads_a_case() {
                     null
                 null
                 ZVAL "App\\Tenant\\Status"
-              SHARP_TYPE_ARGS
-                null
-                null
         "#}
     );
 }
@@ -8220,9 +8118,6 @@ fn an_enum_method_lowers_a_list_literal_a_function_type_and_a_lambda_as_a_class_
                           null
                     ZVAL "Closure"
                     null
-                  SHARP_TYPE_ARGS
-                    null
-                    null
                 null
                 null
         "#}
@@ -8291,9 +8186,6 @@ fn an_enum_returns_self_and_holds_a_union_typed_constant() {
                         ZVAL "cases"
                         ARG_LIST
                   TYPE [7]
-                  null
-                SHARP_TYPE_ARGS
-                  null
                   null
               null
               ZVAL [1] "string"
