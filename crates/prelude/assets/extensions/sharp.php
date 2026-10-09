@@ -3,7 +3,8 @@
 namespace Sharp;
 
 /**
- * Where code sits in its source, as spec section 27 writes it. `$function` is the fully qualified dotted name.
+ * Where code sits in its source: its file, directory, line and column, and the function it is in. PHP# reads it here
+ * instead of from PHP's magic constants. `$function` is the fully qualified dotted name.
  */
 final class Position
 {
@@ -23,7 +24,8 @@ final class Position
 }
 
 /**
- * The process environment, as spec section 29 writes it.
+ * The process environment: its command-line arguments, its current directory and its environment variables. PHP#
+ * reads them here instead of from PHP's superglobals.
  */
 final class Environment
 {
@@ -48,8 +50,8 @@ final class Environment
 final class List
 {
     /**
-     * The list itself, or a list holding the one value, as spec section 24 writes it. The analyzer refuses a `.sharp`
-     * call when `T` could itself be a list, because a `List` and a `Map` both run as PHP arrays.
+     * The list itself, or a list holding the one value. PHP# writes this instead of PHP's `(array)` cast. The analyzer
+     * refuses a `.sharp` call when `T` could itself be a list, because a `List` and a `Map` both run as PHP arrays.
      *
      * @template T
      *
@@ -61,8 +63,8 @@ final class List
 }
 
 /**
- * The methods of a PHP# `List<T>`, as spec section 12 writes them. The analyzer checks a call on a list against
- * them, and the engine runs them on `Sharp\Collection`. A method without `@mutation-free` changes the list.
+ * The methods a PHP# `List<T>` has. The analyzer checks a call on a list against them, and the engine runs them on
+ * `Sharp\Collection`. A method without `@mutation-free` changes the list.
  *
  * @template T
  */
@@ -184,8 +186,8 @@ final class ListMethods
 }
 
 /**
- * The methods of a PHP# `Map<K, V>`, as spec section 12 writes them. The analyzer checks a call on a map against
- * them, and the engine runs them on `Sharp\Collection`. A method without `@mutation-free` changes the map.
+ * The methods a PHP# `Map<K, V>` has. The analyzer checks a call on a map against them, and the engine runs them on
+ * `Sharp\Collection`. A method without `@mutation-free` changes the map.
  *
  * @template K of array-key
  * @template V
