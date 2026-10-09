@@ -284,7 +284,7 @@ pub fn validate_method_signature_compatibility(
 
     if let (Some(parent_return), Some(child_return)) =
         (&parent_method.return_type_metadata, &child_method.return_type_metadata)
-        && child_return.from_docblock
+        && (child_return.from_docblock || child_method.flags.is_sharp())
     {
         let mut expanded_parent_return_type = parent_return.type_union.clone();
         let mut expanded_child_return_type = child_return.type_union.clone();

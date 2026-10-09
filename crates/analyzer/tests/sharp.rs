@@ -1381,15 +1381,33 @@ const COUNTER: &str = "<?php\n\nnamespace Lib;\n\nabstract class Counter\n{\n   
 const TALLY: &str = "namespace Demo;\n\nimport Lib.Counter;\n\npublic class Tally : Counter\n{\n    public override Map<int, int> counts()\n    {\n        return [:];\n    }\n}\n";
 
 /// A PHP# override returns the type it writes, because PHP# reads no docblock, so the parent's `@return list<int>`
-/// never replaces its `Map<int, int>` and an empty `Map` literal is accepted. The PHP twin inherits the parent's
-/// `@return`, so a string-keyed array is refused.
+/// never replaces its `Map<int, int>` and an empty `Map` literal is accepted. The signature check compares that type
+/// with the parent's `@return` and reports that it does not fit. The PHP twin inherits the parent's `@return`, so a
+/// string-keyed array is refused.
 #[test]
 fn an_override_of_a_plain_php_method_returns_the_type_it_writes() {
     let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Counter;\n\nclass Tally extends Counter\n{\n    #[\\Override]\n    public function counts(): array\n    {\n        return ['a' => 1];\n    }\n}\n";
     let others = [("src/Lib/Counter.php", COUNTER)];
 
     assert_eq!(issues(("src/Demo/Tally.php", php), &others), ["12:16 invalid-return-statement"]);
-    assert_eq!(issues(("src/Demo/Tally.sharp", TALLY), &others), Vec::<String>::new());
+    assert_eq!(
+        messages(("src/Demo/Tally.sharp", TALLY), &others),
+        [
+            "Return type `Map<int, int>` of `Tally.counts` is incompatible with parent return type `List<int>` of `Counter.counts`"
+        ]
+    );
+}
+
+/// A PHP# override whose written return type fits the parent's `@return` passes the signature check. The PHP twin
+/// writes the same override in PHP.
+#[test]
+fn an_override_of_a_plain_php_method_whose_return_type_fits_the_parents_docblock_is_accepted() {
+    let sharp = "namespace Demo;\n\nimport Lib.Counter;\n\npublic class Tally : Counter\n{\n    public override List<int> counts()\n    {\n        return [1];\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Counter;\n\nclass Tally extends Counter\n{\n    #[\\Override]\n    public function counts(): array\n    {\n        return [1];\n    }\n}\n";
+    let others = [("src/Lib/Counter.php", COUNTER)];
+
+    assert_eq!(issues(("src/Demo/Tally.php", php), &others), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Tally.sharp", sharp), &others), Vec::<String>::new());
 }
 
 /// A plain PHP subclass of a PHP# override meets the type the override writes, as a subclass of any PHP# method does,
@@ -1425,8 +1443,9 @@ fn an_override_of_a_plain_php_method_takes_the_parameter_type_it_writes() {
     );
 }
 
-/// A PHP# method that implements a plain PHP interface method keeps the types it writes, as an override does. The PHP
-/// twin inherits the interface's `@return` and `@param`.
+/// A PHP# method that implements a plain PHP interface method keeps the types it writes, as an override does, and the
+/// signature check reports each one that does not fit the interface's docblock. The PHP twin inherits the interface's
+/// `@return` and `@param`.
 #[test]
 fn an_implementation_of_a_plain_php_interface_method_keeps_the_types_it_writes() {
     let library = "<?php\n\nnamespace Lib;\n\ninterface Source\n{\n    /** @return list<int> */\n    public function counts(): array;\n\n    /** @param list<string> $tags */\n    public function tag(array $tags): void;\n}\n";
@@ -1438,6 +1457,7 @@ fn an_implementation_of_a_plain_php_interface_method_keeps_the_types_it_writes()
     assert_eq!(
         messages(("src/Demo/Feed.sharp", sharp), &others),
         [
+            "Return type `Map<int, int>` of `Feed.counts` is incompatible with parent return type `List<int>` of `Source.counts`",
             "Parameter `tags` of `Feed.tag` expects type `Map<string, int>` but parent `Source.tag` expects type `List<string>`"
         ]
     );
