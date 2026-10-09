@@ -14,7 +14,7 @@
 [![CD Status](https://github.com/heyJordanParker/mago-sharp/actions/workflows/cd.yml/badge.svg)](https://github.com/heyJordanParker/mago-sharp/actions/workflows/cd.yml)
 [![Latest Stable Version for PHP](https://poser.pugx.org/heyjordanparker/mago-sharp/v)](https://packagist.org/packages/heyjordanparker/mago-sharp)
 [![Total Composer Downloads](http://poser.pugx.org/heyjordanparker/mago-sharp/downloads)](https://packagist.org/packages/heyjordanparker/mago-sharp)
-[![License](https://img.shields.io/crates/l/mago.svg)](https://github.com/heyJordanParker/mago-sharp/blob/master/LICENSE-MIT)
+[![License](https://img.shields.io/github/license/heyJordanParker/mago-sharp)](https://github.com/heyJordanParker/mago-sharp/blob/master/LICENSE-MIT)
 
 </div>
 

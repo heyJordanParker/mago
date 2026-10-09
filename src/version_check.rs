@@ -325,6 +325,13 @@ mod tests {
     }
 
     #[test]
+    fn zero_minor_pin_warns_under_the_next_minor() {
+        let check = VersionPin::parse("0.2").unwrap().check("0.3.0").unwrap();
+        assert_eq!(check, VersionCheck::MinorDrift);
+        assert!(!check.is_fatal(VersionDriftFailLevel::default()));
+    }
+
+    #[test]
     fn minor_pin_fails_on_major_drift() {
         let pin = VersionPin::parse("1.19").unwrap();
         assert_eq!(pin.check("2.19.0").unwrap(), VersionCheck::MajorDrift);

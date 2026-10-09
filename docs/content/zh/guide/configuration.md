@@ -31,20 +31,20 @@ Mago 用一份 JSON Schema 描述完整的配置树。能识别该 Schema 的编
 
 ```toml
 #:schema vendor/heyjordanparker/mago-sharp/schema.json
-version = "0"
+version = "0.2"
 php-version = "8.3"
 ```
 
 ```yaml
 # yaml-language-server: $schema=vendor/heyjordanparker/mago-sharp/schema.json
-version: "0"
+version: "0.2"
 php-version: "8.3"
 ```
 
 ```json
 {
   "$schema": "vendor/heyjordanparker/mago-sharp/schema.json",
-  "version": "0",
+  "version": "0.2",
   "php-version": "8.3"
 }
 ```
@@ -124,7 +124,7 @@ excludes = ["build"]   # 追加后 -> ["vendor", "node_modules", "build"]
 这些键位于 `mago.toml` 的根层。
 
 ```toml
-version = "0"
+version = "0.2"
 php-version = "8.2"
 threads = 8
 stack-size = 8388608     # 8 MiB
@@ -147,8 +147,8 @@ editor-url = "phpstorm://open?file=%file%&line=%line%&column=%column%"
 
 三种锁定级别:
 
-- **主版本锁定**(`version = "0"`):任何 `0.x.y` 都满足。升级到 `1.x` 会硬性报错,因为新主版本可能带来不兼容的默认值、schema 变化或规则行为。这是 `mago init` 默认写入的级别。
-- **次版本锁定**(`version = "0.2"`):任何 `0.2.y` 都满足。漂移到不同的次版本会发出警告;跨主版本仍然是致命错误。
+- **主版本锁定**(`version = "0"`):任何 `0.x.y` 都满足。升级到 `1.x` 会硬性报错,因为新主版本可能带来不兼容的默认值、schema 变化或规则行为。从 1.0 起,这是 `mago init` 默认写入的级别。
+- **次版本锁定**(`version = "0.2"`):任何 `0.2.y` 都满足。漂移到不同的次版本会发出警告;跨主版本仍然是致命错误。1.0 之前,新的次版本可能破坏配置,与 Cargo 的 caret 规则一致,所以这是 `mago init` 默认写入的级别。
 - **精确锁定**(`version = "0.2.0"`):任何漂移都会发出警告;跨主版本仍然是致命错误。
 
 警告可通过 `--no-version-check`、`MAGO_NO_VERSION_CHECK` 环境变量,或配置中的 `no-version-check = true` 关闭。这些都不会影响主版本漂移,而后者正是版本锁定的全部意义所在。
