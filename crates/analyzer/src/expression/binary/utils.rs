@@ -29,9 +29,9 @@ use mago_word::Word;
 use mago_word::word;
 
 use crate::artifacts::AnalysisArtifacts;
+use crate::artifacts::CallTarget;
 use crate::code::IssueCode;
 use crate::context::Context;
-use crate::effects::summary::CallTarget;
 use crate::invocation::InvocationTarget;
 use crate::invocation::arguments::verify_argument_type;
 use crate::utils::names::display_class_like_name;
@@ -144,11 +144,7 @@ where
     let expand = |union: &TUnion| expand_in_class(codebase, &method, union);
 
     let identifier = FunctionLikeIdentifier::Method(method.get_class_name(), method.get_method_name());
-    let call_target = CallTarget { callee: identifier, class: None };
-    let recorded = artifacts.call_targets.entry((span.start.offset, span.end.offset)).or_default();
-    if !recorded.contains(&call_target) {
-        recorded.push(call_target);
-    }
+    artifacts.record_call_target(span, CallTarget::FunctionLike { callee: identifier, class: None });
 
     let target = InvocationTarget::FunctionLike {
         identifier,

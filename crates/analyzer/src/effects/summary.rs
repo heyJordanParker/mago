@@ -43,6 +43,7 @@ use mago_word::empty_word;
 use mago_word::word;
 
 use crate::artifacts::AnalysisArtifacts;
+use crate::artifacts::CallTarget;
 use crate::context::Context;
 use crate::effects::Body;
 use crate::effects::Call;
@@ -52,13 +53,6 @@ use crate::effects::EffectSummary;
 use crate::effects::Roots;
 use crate::effects::short_name;
 use crate::statement::function_like::FunctionLikeBody;
-
-/// A function-like a call resolved to, and the class the call names, which an `extern` lookup starts from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct CallTarget {
-    pub(crate) callee: FunctionLikeIdentifier,
-    pub(crate) class: Option<Word>,
-}
 
 /// Records the summary of `body`, whose parameters are declared at `parameters`, into `artifacts`.
 pub(crate) fn record<'arena, A>(
@@ -438,8 +432,8 @@ where
             CallExpression::StaticMethod(call) => (None, &call.argument_list, None),
         };
 
-        // A call of a lambda written in this body runs the lambda here. Any other function value is pure until PR 2
-        // gives `Function<…>` its `uses`.
+        // A call of a lambda written in this body runs the lambda here. A call of any other function a local holds is
+        // pure, as a `Function` type is until the parser gives `Function<…>` its `uses`.
         if let Some(lambda) = function.and_then(|function| self.lambda(function)) {
             let roots: Vec<Roots> = arguments.arguments.iter().map(|argument| self.roots(argument.value())).collect();
             self.inline(lambda, |index| roots.get(index).cloned().unwrap_or_default());
@@ -452,24 +446,67 @@ where
             return;
         };
 
-        for CallTarget { callee, class: named_class } in targets {
-            match callee {
-                FunctionLikeIdentifier::Function(function_name) => {
+        for target in targets {
+            match *target {
+                CallTarget::FunctionLike { callee: FunctionLikeIdentifier::Function(function_name), .. } => {
                     let cause = self
                         .codebase()
                         .get_function(function_name.as_bytes())
-                        .map_or(*function_name, |metadata| metadata.original_name);
+                        .map_or(function_name, |metadata| metadata.original_name);
                     let cause = sharp_name(cause);
                     let declaration = self.extern_of(empty_word(), ascii_lowercase_word(function_name.as_bytes()));
                     self.plain_php(declaration, span, cause);
                 }
-                FunctionLikeIdentifier::Method(declaring_class, method_name) => {
-                    let class = named_class.unwrap_or(*declaring_class);
-                    self.method_call(*declaring_class, *method_name, class, span, receiver, arguments);
+                CallTarget::FunctionLike {
+                    callee: FunctionLikeIdentifier::Method(declaring_class, method_name),
+                    class: named_class,
+                } => {
+                    let class = named_class.unwrap_or(declaring_class);
+                    self.method_call(declaring_class, method_name, class, span, receiver, arguments);
                 }
-                FunctionLikeIdentifier::Closure(_) => {}
+                CallTarget::MagicMethod {
+                    callee: FunctionLikeIdentifier::Method(magic_class, magic_method),
+                    class: served_class,
+                    ..
+                } => {
+                    self.method_call(magic_class, magic_method, served_class, span, receiver, arguments);
+                }
+                CallTarget::Property { class, property } => self.property_call(class, property, span),
+                CallTarget::FunctionLike { callee: FunctionLikeIdentifier::Closure(_), .. }
+                | CallTarget::MagicMethod { .. } => {}
             }
         }
+    }
+
+    /// Records a call of the property `property` of `class` that holds a function. A PHP# class declares it with a
+    /// `Function` type, which is pure without `uses`. A plain PHP closure or callable is `Unknown`, because an `extern`
+    /// declares a class's members, not the code a property holds. An object's `__invoke` is recorded as the method it
+    /// is.
+    fn property_call(&mut self, class: Word, property: Word, span: Span) {
+        let codebase = self.codebase();
+        let Some(class_like) = codebase.get_class_like(class.as_bytes()) else {
+            return;
+        };
+        if class_like.flags.is_sharp() {
+            return;
+        }
+
+        let holds_object = codebase
+            .get_property(class.as_bytes(), property.as_bytes())
+            .and_then(|metadata| metadata.type_metadata.as_ref())
+            .is_some_and(|metadata| {
+                metadata.type_union.types.iter().all(|atomic| {
+                    matches!(atomic, TAtomic::Object(object)
+                        if object.get_name().is_some_and(|name| !name.as_bytes().eq_ignore_ascii_case(b"Closure")))
+                })
+            });
+        if holds_object {
+            return;
+        }
+
+        let property = property.as_bytes().strip_prefix(b"$").unwrap_or(property.as_bytes());
+        let cause = concat_word!(short_name(class_like.original_name), ".", word(property));
+        self.summary.effects.push((Effect::Unknown(None), span, cause));
     }
 
     /// Records a PHP# operator on instances at `span`: it runs the static method its class declares, which takes
@@ -480,8 +517,8 @@ where
             return;
         };
 
-        for CallTarget { callee, .. } in targets {
-            let FunctionLikeIdentifier::Method(class, method) = callee else {
+        for target in targets {
+            let CallTarget::FunctionLike { callee: FunctionLikeIdentifier::Method(class, method), .. } = target else {
                 continue;
             };
 
@@ -604,7 +641,7 @@ where
                     self.summary.effects.push((Effect::Foreign(*effect), span, cause));
                 }
             }
-            None => self.summary.effects.push((Effect::Unknown(cause), span, cause)),
+            None => self.summary.effects.push((Effect::Unknown(Some(cause)), span, cause)),
         }
     }
 

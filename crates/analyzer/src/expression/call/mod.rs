@@ -24,12 +24,12 @@ use mago_word::concat_word;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
+use crate::artifacts::CallTarget;
 use crate::artifacts::ResolvedMethodCall;
 use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::context::scope::control_action::ControlAction;
-use crate::effects::summary::CallTarget;
 use crate::error::AnalysisError;
 use crate::expression::access::analyze_null_safe_class_value;
 use crate::expression::access::class_value_classes;
@@ -253,12 +253,7 @@ where
         if let Some(identifier) = target.get_function_like_identifier() {
             if context.dialect.is_sharp() {
                 let class = target.get_method_context().map(|method_context| method_context.class_like_metadata.name);
-                let call_target = CallTarget { callee: *identifier, class };
-                let recorded =
-                    artifacts.call_targets.entry((call_span.start.offset, call_span.end.offset)).or_default();
-                if !recorded.contains(&call_target) {
-                    recorded.push(call_target);
-                }
+                artifacts.record_call_target(call_span, CallTarget::FunctionLike { callee: *identifier, class });
             }
 
             match identifier {
