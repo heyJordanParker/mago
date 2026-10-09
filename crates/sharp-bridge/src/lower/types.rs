@@ -171,9 +171,9 @@ impl<'analysis> Types<'analysis> {
     pub(crate) fn call_type_arguments(&self, call: &Expression, class: &[u8]) -> Option<String> {
         let span = call.span();
         let arguments = self.artifacts.inferred_type_arguments.get(&(span.start.offset, span.end.offset))?;
-        let object = match call {
-            Expression::Call(Call::Method(call)) => call.object,
-            Expression::Call(Call::NullSafeMethod(call)) => call.object,
+        let (object, names_class) = match call {
+            Expression::Call(Call::Method(call)) => (call.object, self.names.static_call_class(call).is_some()),
+            Expression::Call(Call::NullSafeMethod(call)) => (call.object, false),
             _ => unreachable!("only a method call takes type arguments, not {span:?}"),
         };
         let callee = match object {
@@ -183,6 +183,13 @@ impl<'analysis> Types<'analysis> {
                 .get_class_like(class)
                 .and_then(|class| class.direct_parent_class)
                 .unwrap_or_else(|| unreachable!("the checker refuses `super` in a class without a parent")),
+            // A list or a map runs its methods in the engine's `Sharp\Collection`, which PHP declares.
+            _ if !names_class
+                && receiver_classes(self.expression_type(object)).is_none()
+                && class_value_classes(self.expression_type(object)).is_none() =>
+            {
+                return None;
+            }
             _ => self.call_target(call).class,
         };
         if !self.codebase.get_class_like(callee.as_bytes()).is_some_and(|callee| callee.flags.is_sharp()) {

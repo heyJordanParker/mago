@@ -3262,6 +3262,25 @@ fn a_generic_call_carries_its_type_arguments_and_a_generic_method_its_metadata()
     assert!(!lowered.parameters_of("__construct").contains("SHARP_TYPE_ARGS"));
 }
 
+/// A list runs its methods in the engine's `Sharp\Collection`, which PHP declares, so a call of a generic one such as
+/// `map` carries no type arguments, as a call of any method PHP declares does.
+#[test]
+fn a_generic_method_call_on_a_list_carries_no_type_arguments() {
+    let lowered = Lowered::with(
+        indoc! {"
+        namespace App;
+
+        public class Prices
+        {
+            public static List<string> labels(List<int> prices) => prices.map(price => (string) price);
+        }
+    "},
+        &[],
+    );
+
+    assert!(!lowered.body_of("labels").contains("SHARP_TYPE_ARGS"), "{}", lowered.body_of("labels"));
+}
+
 /// A PHP# generic class ends with its metadata, a `SHARP_TYPE_ARGS` without a `new` whose second text is its bounds:
 /// the type text of each type parameter's bound, `Any?` for one without a bound. It declares its hidden type-argument
 /// slot from it. A class without type parameters, whose header gives no type arguments, has no metadata. `new` of the
