@@ -845,6 +845,20 @@ fn compile_accepts_each_form_that_replaces_a_php_function() {
     assert!(refused.is_empty(), "{}", refused.join("\n"));
 }
 
+/// The compiler lowers code that never runs, such as a generic `new` after a `throw`, with the types the analysis gives
+/// it, whatever the configuration says about analyzing dead code.
+#[test]
+fn compile_lowers_a_generic_new_after_a_throw() {
+    let directory = library_workspace(
+        "namespace App;\n\nimport LogicException;\n\npublic class Box<T>\n{\n    public Box(public T value { get; })\n    {\n    }\n}\n\npublic class Page\n{\n    public Box<int> never()\n    {\n        throw new LogicException(\"never\");\n        return new Box<int>(1);\n    }\n}\n",
+    );
+    let output = run(directory.path(), "compile", &[]);
+    let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+
+    assert!(output.status.success(), "{printed}");
+    assert!(directory.path().join(".sharp/src/App/Page.sharpc").is_file(), "{printed}");
+}
+
 /// A project page that calls every PHP function PHP# replaces with its own syntax.
 const REPLACED_CALLS: &str = "namespace App;\n\npublic class Page\n{\n    public bool text(Any? value) => is_string(value);\n    public bool whole(Any? value) => is_int(value);\n    public bool real(Any? value) => is_float(value);\n    public bool flag(Any? value) => is_bool(value);\n    public string label(int number) => strval(number);\n    public int half(int total, int count) => intdiv(total, count);\n    public List<int> join(List<int> first, List<int> second) => array_merge(first, second);\n    public Map<string, int> merge(Map<string, int> defaults, Map<string, int> overrides) => array_replace(defaults, overrides);\n    public bool walk(List<int> numbers) => array_walk_recursive(numbers, n => n);\n}\n";
 
