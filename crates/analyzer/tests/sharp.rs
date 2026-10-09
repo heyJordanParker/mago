@@ -4378,13 +4378,41 @@ fn coalescing_an_unchecked_any_gives_a_value_that_is_never_null() {
     assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[]), Vec::<String>::new());
 }
 
+/// Spec section 18 lets a template show an `int`, a `float`, a `string` or a `bool`, and section 24 refuses a value
+/// that may be null until it is checked. The PHP twin keeps PHP's own interpolation.
 #[test]
-fn a_template_shows_an_any_only_once_it_is_checked() {
-    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public string show(Any? value, Any sure, int count)\n    {\n        const a = `${value}`;\n        const b = `got ${sure}!`;\n        const c = `${count} items`;\n        return `${a}${b}${c}`;\n    }\n}\n";
-    let php = "<?php\n\nnamespace Demo;\n\nclass Inbox\n{\n    public function show(mixed $value, int $count): string\n    {\n        return \"{$value} and {$count} items\";\n    }\n}\n";
+fn a_template_refuses_every_type_but_int_float_string_and_bool() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Order\n{\n}\n\nclass Receipt\n{\n    public string status(Status status) => `Status: ${status}`;\n\n    public string items(List<int> items) => `Items: ${items}`;\n\n    public string order(Order order) => `Order: ${order}`;\n\n    public string count(int? count) => `Count: ${count}`;\n\n    public string value(Any value) => `Value: ${value}`;\n\n    public string maybe(Any? value) => `Maybe: ${value}`;\n\n    public string step(Function<int(int)> step) => `Step: ${step}`;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Status;\n\nclass Order\n{\n}\n\nclass Receipt\n{\n    public function status(Status $status): string { return \"Status: {$status}\"; }\n\n    /** @param list<int> $items */\n    public function items(array $items): string { return \"Items: {$items}\"; }\n\n    public function order(Order $order): string { return \"Order: {$order}\"; }\n\n    public function count(?int $count): string { return \"Count: {$count}\"; }\n\n    public function value(mixed $value): string { return \"Value: {$value}\"; }\n\n    public function step(\\Closure $step): string { return \"Step: {$step}\"; }\n}\n";
+    let others = [("src/Lib/Status.php", STATUS)];
 
-    assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[]), ["7:20 mixed-operand", "8:24 mixed-operand"]);
-    assert_eq!(issues(("src/Demo/Inbox.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        worded(("src/Demo/Receipt.sharp", sharp), &others),
+        [
+            "11:53 invalid-operand A template shows `int`, `float`, `string` or `bool`, and `Status` is none of them. | This is `Status`. | Show a value taken from it instead, such as a property or the result of a method.",
+            "13:53 invalid-operand A template shows `int`, `float`, `string` or `bool`, and `List<int>` is none of them. | This is `List<int>`. | Show a value taken from it instead, such as a property or the result of a method.",
+            "15:49 invalid-operand A template shows `int`, `float`, `string` or `bool`, and `Order` is none of them. | This is `Order`. | Show a value taken from it instead, such as a property or the result of a method.",
+            "17:48 invalid-operand A template shows `int`, `float`, `string` or `bool`, and `int?` is none of them. | This is `int?`. | Test it with `!= null` first.",
+            "19:47 invalid-operand A template shows `int`, `float`, `string` or `bool`, and `Any` is none of them. | This is `Any`. | Check what the value is with `is`, `as` or `match` first.",
+            "21:48 invalid-operand A template shows `int`, `float`, `string` or `bool`, and `Any?` is none of them. | This is `Any?`. | Check what the value is with `is`, `as` or `match` first.",
+            "23:59 invalid-operand A template shows `int`, `float`, `string` or `bool`, and `Function<int(int)>` is none of them. | This is `Function<int(int)>`. | Show a value taken from it instead, such as a property or the result of a method.",
+        ]
+    );
+    assert_eq!(
+        codes(&issues(("src/Demo/Receipt.php", php), &others)),
+        ["invalid-type-cast", "array-to-string-conversion", "invalid-type-cast", "invalid-type-cast"]
+    );
+}
+
+/// A literal or a narrowed type counts by its scalar type, so `1|2` is an `int` and `true` is a `bool`, and a template
+/// shows a `bool` as `true` or `false`, which the checker reads as the template's text.
+#[test]
+fn a_template_shows_an_int_a_float_a_string_and_a_bool_and_what_narrows_to_one() {
+    let sharp = "namespace Demo;\n\nclass Receipt\n{\n    public string show(int count, float ratio, string name, bool paid, int? maybe, Any value)\n    {\n        const level = paid ? 1 : 2;\n        const shown = `${count} ${ratio} ${name} ${paid} ${level} ${1} ${2.5} ${\"x\"} ${true}`;\n        if (maybe == null) {\n            return shown;\n        }\n        if (value is string) {\n            return `${shown} ${maybe} ${value}`;\n        }\n\n        return `${shown} ${maybe}`;\n    }\n\n    public int code(bool paid) => match (`${paid}`) {\n        \"true\" => 1,\n        default => 0,\n    };\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Receipt\n{\n    public function show(int $count, float $ratio, string $name, bool $paid, ?int $maybe, mixed $value): string\n    {\n        $level = $paid ? 1 : 2;\n        $shown = \"{$count} {$ratio} {$name} {$paid} {$level}\";\n        if ($maybe === null) {\n            return $shown;\n        }\n        if (is_string($value)) {\n            return \"{$shown} {$maybe} {$value}\";\n        }\n\n        return \"{$shown} {$maybe}\";\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Receipt.sharp", sharp), &[]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Receipt.php", php), &[]), Vec::<String>::new());
 }
 
 #[test]
