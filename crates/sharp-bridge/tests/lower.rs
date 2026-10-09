@@ -2217,13 +2217,13 @@ fn a_backed_enum_value_goes_into_an_emptied_list_add_as_its_case() {
 /// return $counts->get($status->value);
 /// ```
 ///
-/// `counts = []` leaves the local a `Map<Calc, int>`, whose `get` takes a key, so a case goes in as its `->value`.
+/// `counts = [:]` leaves the local a `Map<Calc, int>`, whose `get` takes a key, so a case goes in as its `->value`.
 #[test]
 fn a_backed_enum_key_goes_into_an_emptied_map_get_as_its_backing_value() {
     assert_eq!(
         body_in(
             "int? run(Calc status)",
-            "        Map<Calc, int> counts = [status: 1];\n        counts = [];\n        return counts.get(status);\n",
+            "        Map<Calc, int> counts = [status: 1];\n        counts = [:];\n        return counts.get(status);\n",
             &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
         ),
         indoc! {r#"

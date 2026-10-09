@@ -48,6 +48,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::expression::array::check_sharp_literal_kind;
 use crate::invocation::Invocation;
 use crate::invocation::InvocationArgument;
 use crate::invocation::InvocationArgumentsSource;
@@ -649,6 +650,16 @@ where
                     && contains_parameter_variable(&final_parameter_type);
 
             if !check_is_deferred_to_partial_invocation {
+                // A plain PHP `array` parameter names neither a `List` nor a `Map`, so only a parameter PHP# wrote
+                // decides: a PHP# method's or lambda's, or a function value's whose signature PHP# wrote. A PHP
+                // method's or a PHP closure's parameter takes either literal, whatever its docblock says.
+                if matches!(&invocation.target, InvocationTarget::Callable { signature, .. } if signature.is_sharp)
+                    || invocation.target.get_function_like_metadata().is_some_and(|function| function.flags.is_sharp())
+                    || base_class_metadata.is_some_and(|class| class.flags.is_sharp())
+                {
+                    check_sharp_literal_kind(context, argument_expression, &final_parameter_type);
+                }
+
                 verify_argument_type(
                     context,
                     &argument_value_type,
