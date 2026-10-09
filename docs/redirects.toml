@@ -2,12 +2,6 @@
 # that redirects to `to`, optionally preserving the URL hash and query string.
 
 [[redirect]]
-from = "/playground"
-to = "/latest/en/playground/"
-preserve_hash = true
-preserve_query = true
-
-[[redirect]]
 from = "/docs"
 to = "/latest/en/"
 preserve_hash = false

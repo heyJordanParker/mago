@@ -78,8 +78,6 @@ Each entry can be a plain path or a glob:
 - Plain paths (`"tests"`, `"tests/"`, `"src/Foo.php"`) match as prefixes against the relative file path from the project root.
 - Glob patterns (any entry containing `*`, `?`, `[`, or `{`) match the full relative path using the same glob engine the global `source.excludes` uses, with the `[source.glob]` settings applied.
 
-Glob patterns in per-rule `exclude` require Mago 1.20 or later. Earlier releases only accept plain prefix paths.
-
 Per-rule `exclude` is not the same as `[linter].excludes`:
 
 - `[linter].excludes` removes files from every rule.

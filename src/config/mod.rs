@@ -210,29 +210,30 @@ pub struct Configuration {
     #[serde(default, rename = "extends", skip_serializing)]
     #[schemars(rename = "extends", with = "Option<ExtendsDirective>", !skip_serializing)]
     _extends: Option<IgnoredAny>,
-    /// The mago version this project is pinned to.
+    /// The mago-sharp version this project is pinned to.
     ///
     /// Accepts three pin levels:
     ///
-    /// - `"1"`: major pin; any `1.x.y` satisfies it. `mago init` emits this
-    ///   by default. Minor/patch drift within major 1 is a warning; a bump to
-    ///   `2.x` is a hard error.
-    /// - `"1.19"`: minor pin; any `1.19.y` satisfies it.
-    /// - `"1.19.3"`: exact pin; any drift is a warning, and this is the only
+    /// - `"0"`: major pin; any `0.x.y` satisfies it. A different major
+    ///   version is a hard error.
+    /// - `"0.2"`: minor pin; any `0.2.y` satisfies it, and any other minor
+    ///   version is a warning. While the major version is 0 a minor release
+    ///   may change the configuration, so `mago init` writes this
+    ///   `{major}.{minor}` pin.
+    /// - `"0.2.0"`: exact pin; any drift is a warning, and this is the only
     ///   form that `mago self-update --to-project-version` can target without
     ///   ambiguity.
     ///
-    /// Empty / missing is currently a no-op; a future mago release is likely
-    /// to start warning when the pin is absent, to prepare projects for 2.0.
+    /// `version-drift-fail-level` turns minor or patch drift into an error.
+    /// A missing pin skips the check.
     ///
     /// # Compatibility invariant (**do not break**)
     ///
     /// This field's location (top-level) and type (string) are a load-bearing
-    /// contract for cross-major config compatibility: a future mago 2.x must
-    /// be able to read a mago 1.x `mago.toml` via a permissive top-level TOML
-    /// pass, find this field, and refuse to run with
-    /// "this config is pinned to mago 1" *before* it ever hits its own strict
-    /// schema. That means:
+    /// contract for cross-major config compatibility: a later major release
+    /// must be able to read an older `mago.toml` via a permissive top-level
+    /// TOML pass, find this field, and refuse to run on a major mismatch
+    /// *before* it ever hits its own strict schema. That means:
     ///
     /// - never move this field into a `[metadata]` section,
     /// - never rename it,

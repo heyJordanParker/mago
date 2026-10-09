@@ -30,6 +30,7 @@ use crate::ttype::atomic::array::TArray;
 use crate::ttype::atomic::array::key::ArrayKey;
 use crate::ttype::atomic::array::keyed::TKeyedArray;
 use crate::ttype::atomic::array::list::TList;
+use crate::ttype::atomic::callable::TCallable;
 use crate::ttype::atomic::mixed::TMixed;
 use crate::ttype::atomic::mixed::truthiness::TMixedTruthiness;
 use crate::ttype::atomic::object::TObject;
@@ -444,7 +445,7 @@ fn finalize_sealed_arrays(arrays: &mut Vec<TArray>, codebase: &CodebaseMetadata)
 }
 
 fn scrape_type_properties(
-    atomic: TAtomic,
+    mut atomic: TAtomic,
     combination: &mut TypeCombination,
     codebase: &CodebaseMetadata,
     options: CombinerOptions,
@@ -1310,7 +1311,16 @@ fn scrape_type_properties(
         return;
     }
 
-    combination.value_types.insert(atomic.get_id(), atomic);
+    let id = atomic.get_id();
+    // Two signatures with one id share their parameter and return types, and the folded one keeps the PHP# rule for
+    // its parameters if PHP# wrote either.
+    if let TAtomic::Callable(TCallable::Signature(signature)) = &mut atomic
+        && let Some(TAtomic::Callable(TCallable::Signature(existing))) = combination.value_types.get(&id)
+    {
+        signature.is_sharp |= existing.is_sharp;
+    }
+
+    combination.value_types.insert(id, atomic);
 }
 
 fn shapes_are_discriminated(
@@ -1629,6 +1639,8 @@ mod tests {
 
     use crate::ttype::atomic::TAtomic;
     use crate::ttype::atomic::array::list::TList;
+    use crate::ttype::atomic::callable::TCallableSignature;
+    use crate::ttype::atomic::callable::parameter::TCallableParameter;
     use crate::ttype::atomic::scalar::TScalar;
 
     #[test]
@@ -1773,5 +1785,23 @@ mod tests {
 
         assert!(first_element.1.is_int());
         assert!(second_element.1.is_int());
+    }
+
+    #[test]
+    fn test_combine_signatures_of_one_id_keeps_the_sharp_rule_of_either() {
+        let strings = TUnion::from_atomic(TAtomic::Array(TArray::List(TList::new(Arc::new(TUnion::from_atomic(
+            TAtomic::Scalar(TScalar::string()),
+        ))))));
+        let php = TCallableSignature::new(false, true)
+            .with_parameters(vec![TCallableParameter::new(Some(Arc::new(strings)), false, false, false)])
+            .with_return_type(Some(Arc::new(TUnion::from_atomic(TAtomic::Scalar(TScalar::int())))));
+        let sharp = TCallableSignature { is_sharp: true, ..php.clone() };
+        let atomic = |signature: &TCallableSignature| TAtomic::Callable(TCallable::Signature(signature.clone()));
+
+        for types in [vec![atomic(&sharp), atomic(&php)], vec![atomic(&php), atomic(&sharp)]] {
+            let combined = combine(types, &CodebaseMetadata::default(), CombinerOptions::default());
+
+            assert_eq!(combined, [atomic(&sharp)]);
+        }
     }
 }

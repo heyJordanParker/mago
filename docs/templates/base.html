@@ -38,9 +38,6 @@
   {% if has_diagrams %}
   <link rel="stylesheet" href="{{ path_to_root }}{{ current_version }}/_assets/css/diagrams.css">
   {% endif %}
-  {% if is_playground %}
-  <link rel="stylesheet" href="{{ path_to_root }}{{ current_version }}/_assets/css/playground.css">
-  {% endif %}
   {% if lang_dir == "rtl" %}
   <link rel="stylesheet" href="{{ path_to_root }}{{ current_version }}/_assets/css/rtl.css">
   {% endif %}
@@ -57,7 +54,7 @@
     })();
   </script>
 </head>
-<body{% if is_playground %} class="is-playground"{% endif %}>
+<body>
   {% include "partials/header.html" %}
   <div id="search-root" class="search-root" hidden></div>
 
@@ -71,11 +68,7 @@
 
   {% block layout %}{% endblock layout %}
 
-  {# The playground fills the entire viewport below the header, so a footer
-     would force a page scrollbar. Skip it on that route. #}
-  {% if not is_playground %}
   {% include "partials/footer.html" %}
-  {% endif %}
 
   <script src="{{ path_to_root }}{{ current_version }}/_assets/js/theme.js" defer></script>
   <script src="{{ path_to_root }}{{ current_version }}/_assets/js/search.js" defer></script>
@@ -86,7 +79,6 @@
   <script src="https://cdn.jsdelivr.net/npm/mermaid@11.16.1/dist/mermaid.min.js" integrity="sha384-aBQXj4hK6Jm05i7aQAsUV3bLdSUrHX1BGYfMB0166TtWt/RRaw+h0Eelme9OCOvy" crossorigin="anonymous" defer></script>
   <script src="{{ path_to_root }}{{ current_version }}/_assets/js/diagrams.js" defer></script>
   {% endif %}
-  {% if is_homepage %}<script src="{{ path_to_root }}{{ current_version }}/_assets/js/sponsors.js" defer></script>{% endif %}
   {% block page_scripts %}{% endblock page_scripts %}
 </body>
 </html>

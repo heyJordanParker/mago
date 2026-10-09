@@ -424,7 +424,7 @@ pub fn get_plugins() -> Result<JsValue, JsValue> {
     serde_wasm_bindgen::to_value(&plugins).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
-/// Returns metadata for all linter integrations the playground can toggle.
+/// Returns metadata for all linter integrations a browser client can toggle.
 ///
 /// # Errors
 ///
