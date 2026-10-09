@@ -1,5 +1,6 @@
 use mago_allocator::prelude::*;
 use mago_database::file::HasFileId;
+use mago_span::HasSpan;
 
 use crate::T;
 use crate::cst::cst::Array;
@@ -90,14 +91,19 @@ where
                     }),
                     Some(T!["=>"]) => {
                         let double_arrow = self.stream.consume_span()?;
-                        if self.dialect.is_sharp() {
-                            self.errors.push(ParseError::PhpSyntaxInSharp(T!["=>"], double_arrow));
+                        if !self.dialect.is_sharp() {
+                            return Ok(ArrayElement::KeyValue(KeyValueArrayElement {
+                                key: expr,
+                                double_arrow,
+                                value: self.parse_possibly_referenced_expression()?,
+                            }));
                         }
 
-                        ArrayElement::KeyValue(KeyValueArrayElement {
-                            key: expr,
-                            double_arrow,
-                            value: self.parse_possibly_referenced_expression()?,
+                        self.errors.push(ParseError::PhpSyntaxInSharp(T!["=>"], double_arrow));
+                        let value = self.parse_possibly_referenced_expression()?;
+
+                        ArrayElement::Value(ValueArrayElement {
+                            value: self.arena.alloc(Expression::Error(expr.span().join(value.span()))),
                         })
                     }
                     _ => ArrayElement::Value(ValueArrayElement { value: expr }),

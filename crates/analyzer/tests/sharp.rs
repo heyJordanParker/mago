@@ -3816,6 +3816,49 @@ fn a_pattern_the_parser_refuses_reports_only_its_parse_error() {
 }
 
 #[test]
+fn an_expression_the_parser_refuses_reports_only_its_parse_error() {
+    let store = "<?php\n\nnamespace Demo;\n\nfinal class Store\n{\n    public static function name(): string\n    {\n        return 'a';\n    }\n\n    public static function maybe(): ?string\n    {\n        return null;\n    }\n\n    public static function keep(mixed $value): void\n    {\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static void run(Store store)\n    {\n        string? text = Store.maybe();\n        text .= Store.name();\n        printf(text ?? \"\");\n        printf(store->missing());\n        printf(Store::missing());\n        printf(store?->missing());\n        Store.keep(fn(int x) => x.missing());\n        Store.keep(function(int x) { return x.missing(); });\n        Store.keep([\"a\" => Store.missing()]);\n        Store.keep(match (store) { Store found when found == store ? true : Store.missing() => 1, default => 2 });\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function run(Store $store): void\n    {\n        $text = Store::maybe();\n        $text .= Store::name();\n        printf($text ?? '');\n        printf($store->missing());\n        printf(Store::missing());\n        printf($store?->missing());\n        Store::keep(fn(int $x) => $x->missing());\n        Store::keep(function (int $x) { return $x->missing(); });\n        Store::keep(['a' => Store::missing()]);\n    }\n}\n";
+    let reports = |analyzed: (&'static str, &'static str)| -> Vec<String> {
+        analyze(&PLUGIN_REGISTRY, settings(), analyzed, &[("src/Demo/Store.php", store)])
+            .iter()
+            .map(|issue| format!("{} {}", located(analyzed.1, issue), issue.message))
+            .collect()
+    };
+
+    assert_eq!(
+        reports(("src/Demo/Report.php", php)),
+        [
+            "10:9 possibly-null-operand Possibly null left operand used in string concatenation (type `null|string`).",
+            "11:16 redundant-null-coalesce Redundant null coalesce: left-hand side can never be `null` or undefined.",
+            "12:24 non-existent-method Method `missing` does not exist on type `Demo\\Store`.",
+            "12:16 mixed-argument Invalid argument type for argument #1 of `printf`: expected `string`, but found `mixed`.",
+            "13:23 non-existent-method Method `missing` does not exist on type `Demo\\Store`.",
+            "13:16 mixed-argument Invalid argument type for argument #1 of `printf`: expected `string`, but found `mixed`.",
+            "14:25 non-existent-method Method `missing` does not exist on type `Demo\\Store`.",
+            "14:16 mixed-argument Invalid argument type for argument #1 of `printf`: expected `string`, but found `mixed`.",
+            "15:39 invalid-method-access Attempting to access a method on a non-object type (`int`).",
+            "16:52 invalid-method-access Attempting to access a method on a non-object type (`int`).",
+            "17:36 non-existent-method Method `missing` does not exist on type `Demo\\Store`.",
+        ]
+    );
+    assert_eq!(
+        reports(("src/Demo/Report.sharp", sharp)),
+        [
+            "8:14 parse `.=` is PHP syntax: in PHP# `.` is member access",
+            "10:21 parse `->` is PHP syntax: PHP# writes member access with `.`",
+            "11:21 parse `::` is PHP syntax: PHP# writes static access with `.`",
+            "12:21 parse `?->` is PHP syntax: PHP# writes null-safe member access with `?.`",
+            "13:20 parse PHP# writes a lambda as a bare arrow without `fn` or `function`, as in `x => x.id` or `(a, b) => { … }`",
+            "14:20 parse PHP# writes a lambda as a bare arrow without `fn` or `function`, as in `x => x.id` or `(a, b) => { … }`",
+            "15:25 parse `EqualGreaterThan` is PHP syntax that PHP# does not have",
+            "16:53 parse A `? :` in a `when` condition needs parentheses, as in `when (strict ? forced : ready) =>`.",
+        ]
+    );
+}
+
+#[test]
 fn a_when_condition_that_is_not_bool_is_an_invalid_operand_named_when() {
     let sharp = "namespace Demo;\n\nimport Lib.Shape;\nimport Lib.Circle;\n\nclass Report\n{\n    public static string round(Shape shape) => match (shape) {\n        Circle c when c.radius => \"round\",\n        default => \"other\",\n    };\n}\n";
 
