@@ -1532,7 +1532,11 @@ where
                 .with_annotation(Annotation::primary(iterator.span()).with_message("This might be `false`"))
                 .with_annotation(Annotation::secondary(foreach.span()).with_message(format!("This {loop_code} might not be executed")))
                 .with_note(format!("If this expression is `false`, it will be treated as {empty_collection}, and the loop body will not execute."))
-                .with_help("Consider checking for `false` or truthiness before the loop if this is not intended."),
+                .with_help(if context.dialect.is_sharp() {
+                    "Consider checking for `false` before the loop if this is not intended."
+                } else {
+                    "Consider checking for `false` or truthiness before the loop if this is not intended."
+                }),
         );
     }
 

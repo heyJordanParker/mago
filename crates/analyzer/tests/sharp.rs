@@ -1943,6 +1943,34 @@ fn an_operand_that_may_be_false_asks_for_a_check_of_false() {
     );
 }
 
+/// A loop over a value that may be `false`, from a PHP method, asks for a check of `false` before the loop. PHP# has
+/// no truthiness. PHP keeps its own wording.
+#[test]
+fn a_loop_over_a_value_that_may_be_false_asks_for_a_check_of_false() {
+    let store = (
+        "src/Lib/Store.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Store\n{\n    /** @return list<int>|false */\n    public static function ids(): array|false { return [1]; }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public static int total() { let sum = 0; for (const id of Store.ids()) { sum += id; } return sum; }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Report\n{\n    public static function total(): int { $sum = 0; foreach (Store::ids() as $id) { $sum += $id; } return $sum; }\n}\n";
+    let possibly_false = |analyzed| -> Vec<String> {
+        worded(analyzed, &[store]).into_iter().filter(|line| line.contains(" possibly-false-iterator ")).collect()
+    };
+
+    assert_eq!(
+        possibly_false(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:63 possibly-false-iterator Expression being iterated (type `false|List<int>`) might be `false` at runtime. | This might be `false` | This loop might not be executed | If this expression is `false`, it will be treated as an empty list, and the loop body will not execute. | Consider checking for `false` before the loop if this is not intended.",
+        ]
+    );
+    assert_eq!(
+        possibly_false(("src/Demo/Report.php", php)),
+        [
+            "9:62 possibly-false-iterator Expression being iterated (type `false|list<int>`) might be `false` at runtime. | This might be `false` | This `foreach` might not be executed | If this expression is `false`, it will be treated as an empty array, and the loop body will not execute. | Consider checking for `false` or truthiness before the loop if this is not intended.",
+        ]
+    );
+}
+
 /// A condition that contradicts or repeats an earlier one names its variables and types as PHP# writes them. The
 /// earlier condition reads as the `||` it is. PHP keeps its own wording.
 #[test]
