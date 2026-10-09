@@ -164,11 +164,7 @@ fn analyze_string_concat_operand<'arena, A>(
             .with_note(
                 "If this operand is `false` at runtime, it will be implicitly converted to an empty string `''`.",
             )
-            .with_help(if context.dialect.is_sharp() {
-                "Ensure the operand is not `false` before concatenation."
-            } else {
-                "Ensure the operand is non-falsy before concatenation, or explicitly cast to string."
-            }),
+            .with_help("Ensure the operand is non-falsy before concatenation, or explicitly cast to string."),
         );
     }
 
