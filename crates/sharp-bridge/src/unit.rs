@@ -28,8 +28,8 @@ compile_error!("a .sharpc file is little-endian, and the engine reads it by cast
 
 pub const SHARP_UNIT_MAGIC: [u8; 8] = *b"SHARPC\0\0";
 
-/// The folder at the workspace root that holds every compiled file.
-const COMPILED_FOLDER: &str = ".sharp";
+/// The folder at the workspace root, and at each package root, that holds every compiled file.
+pub const COMPILED_FOLDER: &str = ".sharp";
 
 /// The first bytes of a `.sharpc` file. Every 16-byte hash is xxh3-128 in canonical big-endian order.
 #[repr(C)]

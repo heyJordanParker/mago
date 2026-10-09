@@ -15,6 +15,7 @@ use mago_composer::AutoloadPsr4value;
 use mago_composer::ComposerPackage;
 use mago_composer::ComposerPackageAutoloadDevPsr4value;
 use mago_database::file::FileId;
+use mago_sharp_bridge::unit::COMPILED_FOLDER;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -387,7 +388,7 @@ impl Package {
     /// The package of the workspace at `root`, in `.sharp/.lean/` apart from the `.sharpc` mirror of the sources. The
     /// folder is joined one name at a time, since `cmd` reads a `/` in a Windows path as a switch.
     pub(crate) fn new(root: &Path) -> Self {
-        Self { directory: plain(root).join(".sharp").join(".lean") }
+        Self { directory: plain(root).join(COMPILED_FOLDER).join(".lean") }
     }
 
     /// Writes the package's Lean version, so elan installs it on first use, and asks `lake` for its version there.

@@ -40,9 +40,6 @@ use crate::error::Error;
 use crate::extensions::start_external_analyzer;
 use crate::utils::create_orchestrator;
 
-/// The folder at the workspace root that holds every compiled file.
-const COMPILED_FOLDER: &str = ".sharp";
-
 /// The folder in the `.sharp` folder that holds the Lean package of the project's laws.
 const LEAN_FOLDER: &str = ".lean";
 
@@ -133,7 +130,7 @@ impl CompileCommand {
             }
         }
 
-        let compiled_folder = root.join(COMPILED_FOLDER);
+        let compiled_folder = root.join(unit::COMPILED_FOLDER);
         if compiled_folder.is_dir() {
             delete_all_but(&compiled_folder, &written, &compiled_folder.join(LEAN_FOLDER))
                 .map_err(DatabaseError::from)?;
@@ -247,7 +244,7 @@ fn package_compiled_folders(root: &Path, database: &impl DatabaseReader) -> BTre
         let name = String::from_utf8_lossy(&file.name);
         let mut folder = name.as_ref();
         while let Some((parent, _)) = folder.rsplit_once('/') {
-            let compiled = format!("{parent}/{COMPILED_FOLDER}");
+            let compiled = format!("{parent}/{}", unit::COMPILED_FOLDER);
             if root.join(&compiled).is_dir() {
                 folders.insert(compiled);
             }

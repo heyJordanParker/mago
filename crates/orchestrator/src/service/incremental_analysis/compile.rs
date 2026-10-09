@@ -146,7 +146,8 @@ impl IncrementalAnalysisService {
                 )
             })
             .collect();
-        let mut unproven = prove(translations).map_err(mago_database::error::DatabaseError::from)?;
+        let mut unproven = prove(translations)
+            .map_err(|error| OrchestratorError::General(format!("The Lean step failed: {error}.")))?;
 
         let mut reads = self.reads();
         let read_by_every_file: HashSet<FileId> = self
@@ -1482,5 +1483,17 @@ mod tests {
                 other => panic!("{file_id:?}: {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn a_failed_lean_step_reports_itself_as_the_lean_step() {
+        let database = lawful_project();
+        let mut service = analyzed(&database);
+
+        let error = service
+            .compile(empty_stamp, |_| Err(std::io::Error::other("lake crashed")))
+            .expect_err("the Lean step failed");
+
+        assert_eq!(error.to_string(), "The Lean step failed: lake crashed.");
     }
 }
