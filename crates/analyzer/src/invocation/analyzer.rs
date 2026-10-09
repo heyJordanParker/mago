@@ -66,6 +66,7 @@ use crate::invocation::template_result::populate_template_result_from_invocation
 use crate::invocation::template_result::refine_template_result_for_function_like;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::names::display_variable_name;
+use crate::utils::names::is_prelude_stub;
 
 fn narrow_class_related_argument<A>(
     context: &Context<'_, '_, A>,
@@ -650,12 +651,16 @@ where
                     && contains_parameter_variable(&final_parameter_type);
 
             if !check_is_deferred_to_partial_invocation {
-                // A plain PHP `array` parameter names neither a `List` nor a `Map`, so only a parameter PHP# wrote
-                // decides: a PHP# method's or lambda's, or a function value's whose signature PHP# wrote. A PHP
-                // method's or a PHP closure's parameter takes either literal, whatever its docblock says.
+                // Only a type PHP# wrote is judged by PHP# literal rules: the parameter of a PHP# method or lambda,
+                // whatever class the call goes through, of a function value whose signature PHP# wrote, or of a
+                // `Sharp\` collection method, which PHP# declares as a plain PHP stub only to carry its templates. A
+                // plain PHP method's or closure's parameter takes either literal, whatever its docblock says.
                 if matches!(&invocation.target, InvocationTarget::Callable { signature, .. } if signature.is_sharp)
                     || invocation.target.get_function_like_metadata().is_some_and(|function| function.flags.is_sharp())
-                    || base_class_metadata.is_some_and(|class| class.flags.is_sharp())
+                    || matches!(
+                        invocation.target.get_function_like_identifier(),
+                        Some(FunctionLikeIdentifier::Method(class, _)) if is_prelude_stub(*class)
+                    )
                 {
                     check_sharp_literal_kind(context, argument_expression, &final_parameter_type);
                 }

@@ -106,9 +106,11 @@ where
 }
 
 /// Returns the sentence that names the `import` lines a `.sharp` file, with the `imported_names` and `scope` of its
-/// imports and namespace, needs before code that names `class_names` by their short names compiles, as
-/// `Add `import Sharp.Text.Regex;` to the file.`: one line for each class-like the file doesn't
-/// [bind](binds_class_like), once each, in the order given. Returns `None` when the file binds them all.
+/// imports and namespace, needs before code that names `class_names` as [`sharp_code_class_name`] writes them
+/// compiles, as `Add `import Sharp.Text.Regex;` to the file.`: one line for each class-like the file doesn't
+/// [bind](binds_class_like), once each, in the order given, under its [alias](sharp_import_alias) when the file binds
+/// its short name to another class-like, as in `import Vendor.Clock as VendorClock;`. Returns `None` when the file
+/// binds them all.
 pub(crate) fn sharp_missing_imports(
     codebase: &CodebaseMetadata,
     imported_names: &WordMap<Word>,
@@ -118,11 +120,16 @@ pub(crate) fn sharp_missing_imports(
     let mut imports: Vec<String> = Vec::new();
     for class_name in class_names {
         let name = codebase.get_class_like(class_name.as_bytes()).map_or(class_name, |m| m.original_name);
-        let import = format!(
-            "`import {};`",
-            String::from_utf8_lossy(mago_bytes::trim_start_byte(name.as_bytes(), b'\\')).replace('\\', ".")
-        );
-        if !binds_class_like(imported_names, scope, name) && !imports.contains(&import) {
+        if binds_class_like(imported_names, scope, name) {
+            continue;
+        }
+
+        let full_name = String::from_utf8_lossy(mago_bytes::trim_start_byte(name.as_bytes(), b'\\')).replace('\\', ".");
+        let import = match sharp_import_alias(codebase, imported_names, scope, name) {
+            Some(alias) => format!("`import {full_name} as {alias};`"),
+            None => format!("`import {full_name};`"),
+        };
+        if !imports.contains(&import) {
             imports.push(import);
         }
     }
@@ -131,6 +138,68 @@ pub(crate) fn sharp_missing_imports(
     let imports = if others.is_empty() { last.clone() } else { format!("{} and {last}", others.join(", ")) };
 
     Some(format!("Add {imports} to the file."))
+}
+
+/// Returns the name a `.sharp` file, with the `imported_names` and `scope` of its imports and namespace, imports the
+/// class-like `name` under when it doesn't [bind](binds_class_like) `name` but [binds](binds_short_name) its short
+/// name to another class-like, so neither import shadows the other. The alias joins the parts of the full name, each
+/// from its first letter on with that letter capitalized, as a PHP# type name starts: `VendorClock` for
+/// `vendor\Clock`. While the file binds the alias too, the first number from 1 that frees it follows, as in
+/// `VendorClock1`, as C#'s Roslyn numbers a name it generates. Returns `None` otherwise, and for a name with no ASCII
+/// letter, which no PHP# type name can be built from.
+fn sharp_import_alias(
+    codebase: &CodebaseMetadata,
+    imported_names: &WordMap<Word>,
+    scope: &NamespaceScope,
+    name: Word,
+) -> Option<String> {
+    if binds_class_like(imported_names, scope, name)
+        || !binds_short_name(codebase, imported_names, scope, &short_name(name))
+    {
+        return None;
+    }
+
+    let alias: String = String::from_utf8_lossy(mago_bytes::trim_start_byte(name.as_bytes(), b'\\'))
+        .split('\\')
+        .map(|part| {
+            let mut part = part.trim_start_matches(|character: char| !character.is_ascii_alphabetic()).to_owned();
+            if let Some(first) = part.get_mut(..1) {
+                first.make_ascii_uppercase();
+            }
+
+            part
+        })
+        .collect();
+    if alias.is_empty() {
+        return None;
+    }
+
+    let mut free = alias.clone();
+    let mut number = 0;
+    while binds_short_name(codebase, imported_names, scope, &free) {
+        number += 1;
+        free = format!("{alias}{number}");
+    }
+
+    Some(free)
+}
+
+/// Whether a `.sharp` file with the `imported_names` and `scope` of its imports and namespace binds the short name
+/// `name` to a class-like, as [`binds_class_like`] binds one: by an import, by a class-like of its namespace, or by the
+/// class-like of `Sharp` it imports by default. A class-like the name would bind only by sharing the namespace counts
+/// when it exists.
+fn binds_short_name(
+    codebase: &CodebaseMetadata,
+    imported_names: &WordMap<Word>,
+    scope: &NamespaceScope,
+    name: &str,
+) -> bool {
+    let (bound, imported) = scope.resolve(NameKind::Default, name);
+
+    [bound, format!("Sharp\\{name}").into_bytes()].into_iter().any(|class_like| {
+        (imported || codebase.class_like_exists(&class_like))
+            && binds_class_like(imported_names, scope, word(&class_like))
+    })
 }
 
 /// Whether a `.sharp` file with the `imported_names` and `scope` of its imports and namespace binds a name to the
@@ -539,21 +608,35 @@ where
     A: Arena,
 {
     if context.dialect.is_sharp() {
-        let class_name =
-            sharp_class_like_name(context.codebase, &context.imported_names, &context.short_name_counts, class_name);
-
-        display_sharp_member(sharp_code_class_name(&class_name), member_name)
+        display_sharp_member(
+            sharp_code_class_name(context.codebase, &context.imported_names, &context.scope, class_name),
+            member_name,
+        )
     } else {
         display_member(context, class_name, member_name)
     }
 }
 
-/// The class `class_name`, named as [`sharp_class_like_name`] names it, as `.sharp` code writes it: its last part. PHP#
-/// refuses a full name in code (spec section 23), so the dotted name that tells two classes of one short name apart in
-/// prose would not compile there.
+/// The class-like `name` as code in a `.sharp` file, with the `imported_names` and `scope` of its imports and
+/// namespace, writes it: by the name the file's import gives it, by the [alias](sharp_import_alias) that
+/// [`sharp_missing_imports`] imports it under when the file binds its short name to another class-like, or else by its
+/// short name. PHP# refuses a full name in code (spec section 23), so the dotted name that tells two classes of one
+/// short name apart in prose would not compile there.
 #[must_use]
-pub(crate) fn sharp_code_class_name(class_name: &str) -> &str {
-    class_name.rsplit('.').next().unwrap_or_default()
+pub(crate) fn sharp_code_class_name(
+    codebase: &CodebaseMetadata,
+    imported_names: &WordMap<Word>,
+    scope: &NamespaceScope,
+    name: Word,
+) -> String {
+    let name = codebase.get_class_like(name.as_bytes()).map_or(name, |m| m.original_name);
+    if let Some(imported_name) =
+        imported_names.get(&ascii_lowercase_word(mago_bytes::trim_start_byte(name.as_bytes(), b'\\')))
+    {
+        return imported_name.to_string();
+    }
+
+    sharp_import_alias(codebase, imported_names, scope, name).unwrap_or_else(|| short_name(name))
 }
 
 /// Returns `List`, `Map` or `Set` when `object` is `Sharp\ListMethods`, `Sharp\MapMethods` or `Sharp\SetMethods`.
@@ -570,6 +653,13 @@ pub(crate) fn sharp_collection_name(object: &TObject) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// A class under `Sharp\` that the prelude declares as a plain PHP stub.
+// Deleted once the standard library's `.sharp` sources replace the prelude stubs (php-sharp issue #60).
+#[must_use]
+pub(crate) fn is_prelude_stub(class: Word) -> bool {
+    class.as_bytes().len() > 6 && class.as_bytes()[..6].eq_ignore_ascii_case(b"sharp\\")
 }
 
 /// Produces a user-facing display string for a `FunctionLikeIdentifier`: a method reads `Order::total` in PHP and

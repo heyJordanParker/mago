@@ -1806,8 +1806,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     /// `target op= value` as `target = operation(target, value)`, for an operator that differs from PHP's: `/=` on ints
     /// runs `\intdiv`, and `+=` on an instance runs the `op_Addition` its class declares. The target's receiver runs
-    /// once: one that is not a local or `this` goes into a hidden `$receiver#N`, which the write sets and the read
-    /// reads, as php-src compiles a property's object before the value assigned to it.
+    /// once: one that is not a local or `this` goes into a hidden `$receiver#N`, which the read sets and the write
+    /// reads. php-src refuses an assignment as the object of a written property, and reads a variable it writes through
+    /// after the value, so `$receiver#N->total = \intdiv(($receiver#N = $this->next())->total, 2)` runs the receiver
+    /// once. The variable stays taken until the value is lowered, so a compound assignment in the value takes another.
     fn compound_assignment(
         &mut self,
         line: u32,
@@ -1828,15 +1830,14 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.temporaries += 1;
                 let name = format!("receiver#{}", self.temporaries).into_bytes();
                 let variable = self.variable(access.object.span(), &name);
+                let member = self.member(&access.property);
+                let target = self.node(SHARP_AST_PROP, 0, line, &[variable, member]);
+
+                let variable = self.variable(access.object.span(), &name);
                 let object = self.expression(access.object);
                 let object = self.node(SHARP_AST_ASSIGN, 0, line, &[variable, object]);
                 let member = self.member(&access.property);
-                let target = self.node(SHARP_AST_PROP, 0, line, &[object, member]);
-
-                let variable = self.variable(access.object.span(), &name);
-                let member = self.member(&access.property);
-                let read = self.node(SHARP_AST_PROP, 0, line, &[variable, member]);
-                self.temporaries -= 1;
+                let read = self.node(SHARP_AST_PROP, 0, line, &[object, member]);
 
                 (target, read)
             }
@@ -1844,6 +1845,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         };
         let value = self.expression(assignment.rhs);
         let result = operation(self, read, value);
+        if receiver.is_some() {
+            self.temporaries -= 1;
+        }
 
         self.node(SHARP_AST_ASSIGN, 0, line, &[target, result])
     }

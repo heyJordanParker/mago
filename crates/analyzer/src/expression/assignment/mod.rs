@@ -223,9 +223,15 @@ where
     // PHP# `[]` and `[:]` name no element type, and PHP types both as one empty array. A place declared as a `List`, a
     // `Map` or a `Set` takes only a literal of its own collection, from `=` and from `??=`, which stores its right side
     // as it is, and keeps that collection when one empties it, as its declaration does, so its rules and elements stay.
-    // A list literal at a place declared a `Set` is that `Set`.
+    // A list literal at a place declared a `Set` is that `Set`. An instance property, written as `x.name` or as `field`,
+    // is judged where its write has analyzed its object.
+    let writes_instance_property = match target_expression {
+        Expression::Access(Access::Property(access)) => context.resolved_names.static_property_class(access).is_none(),
+        Expression::ConstantAccess(field) => context.resolved_names.binding(&field.name) == Some(Binding::Field),
+        _ => false,
+    };
     let declared_collection = match assignment_operator {
-        None | Some(AssignmentOperator::Coalesce(_)) if context.dialect.is_sharp() => {
+        None | Some(AssignmentOperator::Coalesce(_)) if context.dialect.is_sharp() && !writes_instance_property => {
             get_declared_collection(context, block_context, artifacts, target_expression)
                 .map(|collection| Rc::new(TUnion::from_atomic(TAtomic::Array(collection))))
         }
@@ -471,7 +477,7 @@ where
                     artifacts,
                     property_access,
                     &source_type,
-                    source_expression.map(mago_span::HasSpan::span),
+                    source_expression,
                     property_write_kind,
                 )?,
             }

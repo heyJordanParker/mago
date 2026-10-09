@@ -184,7 +184,7 @@ where
             artifacts,
             property_access,
             &root_array_type,
-            Some(root_array_expression.span()),
+            Some(root_array_expression),
             if root_is_array_access_object {
                 PropertyWriteKind::ArrayAccessMutation
             } else {

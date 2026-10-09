@@ -207,16 +207,11 @@ fn check_spaceship_operand<'arena, A>(
                 .with_help("Ensure this operand has a known, comparable type before using the spaceship operator."),
         );
     } else if operand_type.is_false() {
-        let rules = if context.dialect.is_sharp() {
-            "PHP compares `false` with other types according to specific rules (e.g., `false < 1` is `true`)."
-        } else {
-            "PHP compares `false` with other types according to specific rules (e.g., `false == 0` is true, `false < 1` is true)."
-        };
         context.collector.report_with_code(
             IssueCode::FalseOperand,
             Issue::error(format!("{side} operand in spaceship comparison (`<=>`) is `false`."))
                 .with_annotation(Annotation::primary(operand.span()).with_message("This is `false`"))
-                .with_note(rules)
+                .with_note("PHP compares `false` with other types according to specific rules (e.g., `false == 0` is true, `false < 1` is true).")
                 .with_help("Ensure this comparison with `false` is intended, or provide a non-false operand."),
         );
     } else if operand_type.is_falsable() && !operand_type.ignore_falsable_issues() {
