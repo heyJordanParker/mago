@@ -2108,7 +2108,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     /// A template without `${…}` is its text, as php-src's grammar builds a string without interpolation. Any other
-    /// is an `ENCAPS_LIST` of its text that is not empty and its expressions, on the line of its first part.
+    /// is an `ENCAPS_LIST` of its text that is not empty and its values, on the line of its first part.
     fn template(&mut self, template: &InterpolatedString) -> u32 {
         match template.parts.as_slice() {
             [] => self.string(0, self.line(template), b""),
@@ -2120,7 +2120,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                         StringPart::Literal(text) if text.value == Some(b"") => {}
                         StringPart::Literal(text) => children.push(self.template_text(text)),
                         StringPart::BracedExpression(interpolation) => {
-                            children.push(self.expression(interpolation.expression));
+                            children.push(self.template_value(interpolation.expression));
                         }
                         StringPart::Expression(_) => unreachable!("the parser reads only `${{…}}` in a template"),
                     }
@@ -2139,6 +2139,21 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         };
 
         self.string(0, self.line(text), value)
+    }
+
+    /// The value a template's `${…}` shows. Spec section 18 shows a `bool` as `true` or `false`, where PHP's string
+    /// conversion gives `1` or nothing, so a `bool` is `value ? "true" : "false"`. Any other value is itself.
+    fn template_value(&mut self, expression: &Expression) -> u32 {
+        let value = self.expression(expression);
+        if !self.types.expression_type(expression).is_bool() {
+            return value;
+        }
+
+        let line = self.line(expression);
+        let true_text = self.string(0, line, b"true");
+        let false_text = self.string(0, line, b"false");
+
+        self.node(SHARP_AST_CONDITIONAL, 0, line, &[value, true_text, false_text])
     }
 
     /// What an assignment, a compound assignment, `++` or `--` writes: a local or parameter, `object.name`,

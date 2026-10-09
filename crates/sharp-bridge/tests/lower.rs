@@ -7061,6 +7061,38 @@ fn a_template_is_an_encaps_list_of_its_text_and_interpolations() {
 }
 
 /// ```php
+/// return "Paid: " . ($paid ? "true" : "false") . " of {$extra} " . (true ? "true" : "false");
+/// ```
+///
+/// Spec section 18 shows a `bool` in a template as `true` or `false`, where PHP's string conversion gives `1` or
+/// nothing, so a `bool` part is the conditional that picks its text. Every other part lowers as before.
+#[test]
+fn a_bool_in_a_template_is_the_choice_of_true_or_false() {
+    assert_eq!(
+        body_in("string run(bool paid, int extra)", "        return `Paid: ${paid} of ${extra} ${true}`;\n", &[]),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                ENCAPS_LIST
+                  ZVAL "Paid: "
+                  CONDITIONAL
+                    VAR
+                      ZVAL "paid"
+                    ZVAL "true"
+                    ZVAL "false"
+                  ZVAL " of "
+                  VAR
+                    ZVAL "extra"
+                  ZVAL " "
+                  CONDITIONAL
+                    ZVAL true
+                    ZVAL "true"
+                    ZVAL "false"
+        "#}
+    );
+}
+
+/// ```php
 /// $twice = fn (int $a) => $a * $extra; $half = fn ($b) => \intdiv($b, 2); return $twice($half(4));
 /// ```
 ///
