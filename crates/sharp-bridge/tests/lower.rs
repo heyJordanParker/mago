@@ -3112,8 +3112,8 @@ fn a_class_like_metadata_holds_its_header_type_arguments_and_its_bounds() {
 /// A call of a generic method carries the type arguments the checker found, written or inferred, as the last child of
 /// its argument list: a `SHARP_TYPE_ARGS` without a `new`. A type parameter of the class the call is in is `$` and its
 /// index, and one of the method the call is in is `#` and its index, which the engine reads from the method's own
-/// call. A lambda runs in a frame of its own, without its method's type arguments, so a `new` or a call in it that
-/// names one carries none. A method whose call needs its type arguments, or whose parameter names a class with type
+/// call. A lambda writes them the same way, and the engine reads them from the method's call the lambda captured them
+/// from. A method whose call needs its type arguments, or whose parameter names a class with type
 /// arguments or a type parameter, ends its parameter list with its metadata: a `SHARP_TYPE_ARGS` of the bounds of its
 /// own type parameters and a type text list with each parameter's type, `Any?` for one the engine never checks.
 #[test]
@@ -3200,7 +3200,23 @@ fn a_generic_call_carries_its_type_arguments_and_a_generic_method_its_metadata()
                   ZVAL "#0"
         "##}
     );
-    assert!(!lowered.body_of("later").contains("SHARP_TYPE_ARGS"), "{}", lowered.body_of("later"));
+    assert_eq!(
+        lowered.body_of("later"),
+        indoc! {r##"
+            STMT_LIST
+              RETURN
+                ARROW_FUNC "" @25-25
+                  PARAM_LIST
+                  null
+                  SHARP_TYPE_ARGS
+                    NEW
+                      ZVAL "App\\Box"
+                      ARG_LIST
+                    ZVAL "#0"
+                  null
+                  null
+        "##}
+    );
     assert_eq!(
         lowered.body_of("pairWith"),
         indoc! {r##"

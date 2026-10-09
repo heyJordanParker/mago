@@ -312,8 +312,6 @@ struct Lowering<'lowering, 'arena> {
     by_reference: HashSet<u32>,
     /// How many loop bodies hold the statement being lowered, inside the innermost method or lambda.
     loop_depth: u32,
-    /// How many lambdas hold the expression being lowered. A lambda runs without its method's type arguments.
-    lambda_depth: u32,
     /// The name of the property whose accessor body is being lowered, which `field` reads and writes.
     property: Vec<u8>,
     /// Each inline form the lowering copied, with its fingerprint, as often as it copied it.
@@ -343,7 +341,6 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             tested_links: Vec::new(),
             by_reference: HashSet::default(),
             loop_depth: 0,
-            lambda_depth: 0,
             property: Vec::new(),
             inlined: Vec::new(),
             type_parameters: HashMap::default(),
@@ -1406,7 +1403,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 let arguments = self.arguments(arguments);
                 let new = self.node(SHARP_AST_NEW, 0, line, &[class, arguments]);
 
-                match self.types.type_arguments(name, instantiation.span(), self.lambda_depth == 0) {
+                match self.types.type_arguments(name, instantiation.span()) {
                     Some(type_arguments) => {
                         let type_arguments = self.string(0, line, type_arguments.as_bytes());
 
@@ -1825,9 +1822,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// Lowers a lambda's body, which runs in a frame of its own, outside any loop of the method around it.
     fn lambda_body(&mut self, lower: impl FnOnce(&mut Self) -> u32) -> u32 {
         let loop_depth = std::mem::replace(&mut self.loop_depth, 0);
-        self.lambda_depth += 1;
         let body = lower(self);
-        self.lambda_depth -= 1;
         self.loop_depth = loop_depth;
 
         body
@@ -2130,7 +2125,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn call_arguments(&mut self, list: &ArgumentList, call: &Expression) -> u32 {
         let mut arguments = self.argument_nodes(list);
         let line = self.line(list);
-        if let Some(type_arguments) = self.types.call_type_arguments(call, self.class, self.lambda_depth == 0) {
+        if let Some(type_arguments) = self.types.call_type_arguments(call, self.class) {
             let text = self.string(0, line, type_arguments.as_bytes());
             arguments.push(self.node(SHARP_AST_SHARP_TYPE_ARGS, 0, line, &[NULL, text]));
         }

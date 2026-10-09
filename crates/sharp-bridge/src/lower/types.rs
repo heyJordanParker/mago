@@ -8,7 +8,6 @@ use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::callable::TCallable;
-use mago_codex::ttype::atomic::generic::TGenericParameter;
 use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
@@ -154,28 +153,22 @@ impl<'analysis> Types<'analysis> {
     /// when it is a PHP# generic class: the type text of each in declaration order, joined by `, `. A type parameter of
     /// the class the `new` is in is written as `$` and its index, which the engine replaces with `this`'s type argument
     /// at that index, and one of the method it is in as `#` and its index, which the engine replaces with the method's
-    /// own type argument. A lambda runs without its method's type arguments, so where `method_arguments` is false a
-    /// `new` that names a method's type parameter has none.
-    pub(crate) fn type_arguments(&self, class: &[u8], span: Span, method_arguments: bool) -> Option<String> {
+    /// own type argument. A lambda captures its method's type arguments, so a `new` in it writes them the same way.
+    pub(crate) fn type_arguments(&self, class: &[u8], span: Span) -> Option<String> {
         self.bounds(class)?;
         let arguments =
             self.artifacts.inferred_type_arguments.get(&(span.start.offset, span.end.offset)).unwrap_or_else(|| {
                 unreachable!("the analysis records the type arguments of every generic `new`, not {span:?}")
             });
 
-        self.argument_texts(arguments, method_arguments)
+        Some(self.argument_texts(arguments))
     }
 
     /// The type arguments the generic method call at `span` gives the method, as [`Self::type_arguments`] writes those
     /// of a `new`. None when the method declares no type parameter, or PHP declares it, writing its type parameters in
     /// docblocks the engine never reads.
     /// `class` is the class the call is written in, whose method `Self.m()` and whose parent's `super.m()` call.
-    pub(crate) fn call_type_arguments(
-        &self,
-        call: &Expression,
-        class: &[u8],
-        method_arguments: bool,
-    ) -> Option<String> {
+    pub(crate) fn call_type_arguments(&self, call: &Expression, class: &[u8]) -> Option<String> {
         let span = call.span();
         let arguments = self.artifacts.inferred_type_arguments.get(&(span.start.offset, span.end.offset))?;
         let object = match call {
@@ -196,28 +189,11 @@ impl<'analysis> Types<'analysis> {
             return None;
         }
 
-        self.argument_texts(arguments, method_arguments)
+        Some(self.argument_texts(arguments))
     }
 
-    fn argument_texts(&self, arguments: &[TUnion], method_arguments: bool) -> Option<String> {
-        let of_a_method = |template: &&TAtomic| {
-            !matches!(
-                template,
-                TAtomic::GenericParameter(TGenericParameter { defining_entity: GenericParent::ClassLike(_), .. })
-                    | TAtomic::Scalar(TScalar::ClassLikeString(TClassLikeString::Generic {
-                        defining_entity: GenericParent::ClassLike(_),
-                        ..
-                    }))
-            )
-        };
-        if !method_arguments && arguments.iter().any(|argument| argument.get_template_types().iter().any(of_a_method)) {
-            return None;
-        }
-
-        let arguments: Vec<String> =
-            arguments.iter().map(|argument| text(argument, self.codebase, Parameter::Index)).collect();
-
-        Some(arguments.join(", "))
+    fn argument_texts(&self, arguments: &[TUnion]) -> String {
+        arguments.iter().map(|argument| text(argument, self.codebase, Parameter::Index)).collect::<Vec<_>>().join(", ")
     }
 
     /// The metadata of the method `method` of the fully qualified class name `class` that the engine reads on a call:
