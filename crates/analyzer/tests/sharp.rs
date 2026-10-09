@@ -2344,7 +2344,7 @@ fn list_wrap_of_a_list_is_refused_once() {
     let sharp = "namespace Demo;\n\nclass Rows\n{\n    public List<List<int>> read(List<int> numbers)\n    {\n        List<List<int>> rows = List.wrap(numbers);\n        return rows;\n    }\n}\n";
 
     assert_eq!(issues(("src/Demo/Rows.sharp", sharp), &[]), ["7:42 invalid-argument"]);
-    assert_eq!(messages(("src/Demo/Rows.sharp", sharp), &[]), ["T is List<int>, itself a list"]);
+    assert_eq!(messages(("src/Demo/Rows.sharp", sharp), &[]), ["T is List<int>, itself a list; write `numbers is List<int> one ? [one] : numbers`"]);
 }
 
 /// A value from plain PHP typed `mixed` arrives as `Any?`, which could hold a list.
@@ -2390,9 +2390,9 @@ fn list_wrap_of_a_map_or_a_list_of_lists_is_refused() {
     assert_eq!(
         messages(("src/Demo/Rows.sharp", sharp), &[]),
         [
-            "T is Map<string, int>, itself a map",
-            "T is List<List<int>>, itself a list",
-            "T is string|Map<string, int>, which can be a map",
+            "T is Map<string, int>, itself a map; write `counts is Map<string, int> one ? [one] : counts`",
+            "T is List<List<int>>, itself a list; write `rows is List<List<int>> one ? [one] : rows`",
+            "T is string|Map<string, int>, which can be a map; write `either is Map<string, int> one ? [one] : either`",
         ]
     );
 }
@@ -5430,11 +5430,11 @@ fn generic_declarations_infer_what_their_php_template_twins_infer() {
     assert_eq!(
         sharp_messages,
         [
-            "Invalid argument type for argument #1 of `Demo\\Report::keepInt`: expected `int`, but found `Order`.",
-            "Invalid argument type for argument #1 of `Demo\\Report::keepInt`: expected `int`, but found `PaginatedList<Order>`.",
-            "Invalid argument type for argument #1 of `Demo\\Report::keepInt`: expected `int`, but found `Order`.",
-            "Invalid argument type for argument #1 of `Demo\\Report::keepInt`: expected `int`, but found `Order`.",
-            "Possible argument type mismatch for argument #1 of `Demo\\Report::lined`: expected `Validator<Line>`, but possibly received `OrderValidator`.",
+            "Invalid argument type for argument #1 of `Report.keepInt`: expected `int`, but found `Order`.",
+            "Invalid argument type for argument #1 of `Report.keepInt`: expected `int`, but found `PaginatedList<Order>`.",
+            "Invalid argument type for argument #1 of `Report.keepInt`: expected `int`, but found `Order`.",
+            "Invalid argument type for argument #1 of `Report.keepInt`: expected `int`, but found `Order`.",
+            "Possible argument type mismatch for argument #1 of `Report.lined`: expected `Validator<Line>`, but possibly received `OrderValidator`.",
             "Argument type mismatch for type parameter `TItem`.",
         ]
     );
@@ -5519,8 +5519,8 @@ fn an_inherited_constructor_refuses_a_list_of_another_type_and_names_the_list_it
     assert_eq!(
         messages(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]),
         [
-            "Invalid argument type for argument #1 of `Demo\\PaginatedList::__construct`: expected `List<Order>`, but found `List<Invoice>`.",
-            "Invalid argument type for argument #1 of `Demo\\PaginatedList::__construct`: expected `List<Order>`, but found `List<Invoice>`.",
+            "Invalid argument type for argument #1 of `PaginatedList.__construct`: expected `List<Order>`, but found `List<Invoice>`.",
+            "Invalid argument type for argument #1 of `PaginatedList.__construct`: expected `List<Order>`, but found `List<Invoice>`.",
         ]
     );
 }
@@ -5535,7 +5535,7 @@ fn an_inherited_method_takes_the_type_arguments_of_the_header() {
     assert_eq!(
         messages(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING), ("src/Demo/Tray.sharp", tray)]),
         [
-            "Invalid argument type for argument #1 of `Demo\\Tray::replace`: expected `List<Order>`, but found `List<Invoice>`."
+            "Invalid argument type for argument #1 of `Tray.replace`: expected `List<Order>`, but found `List<Invoice>`."
         ]
     );
 }
@@ -5606,8 +5606,8 @@ fn new_self_carries_the_type_parameters_of_its_class() {
     assert_eq!(
         explained(("src/Demo/Box.sharp", boxes), &[]),
         [
-            "11:43 invalid-argument Invalid argument type for argument #1 of `Demo\\Box::__construct`: expected `TItem`, but found `1`. Change the argument value to match `TItem`, or update the parameter's type declaration.",
-            "11:34 invalid-return-statement Invalid return type for function `Demo\\Box::counted`: expected `Box<int>`, but found `Box<TItem>`. Change the return value to match `Box<int>`, or update the function's return type declaration.",
+            "11:43 invalid-argument Invalid argument type for argument #1 of `Box.__construct`: expected `TItem`, but found `int`. Change the argument value to match `TItem`, or update the parameter's type declaration.",
+            "11:34 invalid-return-statement Invalid return type for method `Box.counted`: expected `Box<int>`, but found `Box<TItem>`. Change the return value to match `Box<int>`, or update the method's return type declaration.",
         ]
     );
 }
@@ -6112,8 +6112,8 @@ fn a_function_type_is_checked_by_its_type_parameters() {
     assert_eq!(
         worded(("src/Demo/Box.sharp", sharp), &[]),
         [
-            "5:41 invalid-return-statement Invalid return type for function `Demo\\Box::maker`: expected `Function<TItem()>`, but found `Function<1()>`. | This has type `Function<1()>` | The type `Function<1()>` returned here is not compatible with the declared return type `Function<TItem()>`. | Change the return value to match `Function<TItem()>`, or update the function's return type declaration.",
-            "7:70 invalid-return-statement Invalid return type for function `Demo\\Box::taker`: expected `Function<void(int)>`, but found `Function<void(TItem)>`. | This has type `Function<void(TItem)>` | The type `Function<void(TItem)>` returned here is not compatible with the declared return type `Function<void(int)>`. | Change the return value to match `Function<void(int)>`, or update the function's return type declaration.",
+            "5:41 invalid-return-statement Invalid return type for method `Box.maker`: expected `Function<TItem()>`, but found `Function<1()>`. | This has type `Function<1()>` | The type `Function<1()>` returned here is not compatible with the declared return type `Function<TItem()>`. | Change the return value to match `Function<TItem()>`, or update the method's return type declaration.",
+            "7:70 invalid-return-statement Invalid return type for method `Box.taker`: expected `Function<void(int)>`, but found `Function<void(TItem)>`. | This has type `Function<void(TItem)>` | The type `Function<void(TItem)>` returned here is not compatible with the declared return type `Function<void(int)>`. | Change the return value to match `Function<void(int)>`, or update the method's return type declaration.",
         ]
     );
 }
@@ -6129,8 +6129,8 @@ fn a_default_of_another_type_is_refused_where_a_type_parameter_is_required() {
     assert_eq!(
         worded(("src/Demo/Box.sharp", sharp), &[]),
         [
-            "5:25 invalid-property-default-value Default value for property `Demo\\Box::item` is not assignable to its declared type. | This default value has type `1` | Property is declared with type `TItem` | A property's default value must be assignable to the property's declared type. | Change the default value to match the declared type, or update the property type to accept the default.",
-            "11:34 invalid-parameter-default-value Default value for parameter `$item` is not assignable to its declared type. | This default value has type `1` | Parameter `$item` is declared with type `TItem` | A parameter's default value must be assignable to the parameter's declared type. | Change the default value to match the declared type, or widen the parameter type to accept the default.",
+            "5:25 invalid-property-default-value Default value for property `Box.item` is not assignable to its declared type. | This default value has type `int` | Property is declared with type `TItem` | A property's default value must be assignable to the property's declared type. | Change the default value to match the declared type, or update the property type to accept the default.",
+            "11:34 invalid-parameter-default-value Default value for parameter `item` is not assignable to its declared type. | This default value has type `int` | Parameter `item` is declared with type `TItem` | A parameter's default value must be assignable to the parameter's declared type. | Change the default value to match the declared type, or widen the parameter type to accept the default.",
         ]
     );
 }
@@ -6157,7 +6157,7 @@ fn a_type_argument_outside_its_bound_is_named_as_sharp_writes_it() {
             "11:14 unused-template-parameter Type parameter `TItem` is never used in class `Page`. | Type parameter `TItem` is defined on this class but never referenced | Remove `TItem` from `Page<…>`.",
             "15:14 invalid-template-parameter Type argument for `Page` is not compatible with its bound. | In the definition of `LinePage` | The type `Line` provided for type parameter `TItem`... | ...does not satisfy the bound `DatabaseEntity` from `Page`. | Supply a type contained by `DatabaseEntity`.",
             "23:55 template-constraint-violation Argument type mismatch for type parameter `T`. | This argument has type `Line`, which is not compatible with the required bound `DatabaseEntity`. | Type parameter `T` is bounded by `DatabaseEntity`. | Ensure the argument's type satisfies the bound.",
-            "23:55 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `T`, but found `Line`. | This has type `Line` | Arguments to this method are incorrect | The provided type `Line` is not compatible with the expected type `T`. | Change the argument value to match `T`, or update the parameter's type declaration.",
+            "23:55 invalid-argument Invalid argument type for argument #1 of `Report.keep`: expected `T`, but found `Line`. | This has type `Line` | Arguments to this method are incorrect | The provided type `Line` is not compatible with the expected type `T`. | Change the argument value to match `T`, or update the parameter's type declaration.",
         ]
     );
 }
@@ -6181,9 +6181,9 @@ fn an_override_names_its_types_as_sharp_writes_them_and_the_erased_types_as_php_
     assert_eq!(
         worded(("src/Demo/Base.sharp", sharp), &[]),
         [
-            "26:26 incompatible-parameter-type Parameter `item` of `Demo\\OrderBase::put()` expects type `Line` but parent `Demo\\Base::put()` expects type `Order` | Parameter `item` expects type `Line` but parent expects `Order` | Parent method `Demo\\Base::put()` parameter defined here | In class `Demo\\OrderBase` | Parameter types must be contravariant: child must accept equal or wider types than parent. | Change the parameter type to be compatible with the parent method.",
-            "30:26 incompatible-return-type Return type `Line` of `Demo\\OrderBase::get()` is incompatible with parent return type `Order` of `Demo\\Base::get()` | Returns type `Line` but parent expects `Order` | Parent method `Demo\\Base::get()` return type defined here | In class `Demo\\OrderBase` | Return types must be covariant: child must return equal or narrower types than parent. | Change the return type to be compatible with the parent method.",
-            "24:21 incompatible-property-type Property `Demo\\OrderBase::$item` has an incompatible type declaration. | This type `Line?` is incompatible with the parent's type. | The parent property is defined with type `Order?` here. | PHP requires property types to be invariant, meaning the type declaration in a child class must be exactly the same as in the parent class. | Change the type of `$item` to `Order?` to match the parent property.",
+            "26:26 incompatible-parameter-type Parameter `item` of `OrderBase.put` expects type `Line` but parent `Base.put` expects type `Order` | Parameter `item` expects type `Line` but parent expects `Order` | Parent method `Base.put` parameter defined here | In class `OrderBase` | Parameter types must be contravariant: child must accept equal or wider types than parent. | Change the parameter type to be compatible with the parent method.",
+            "30:26 incompatible-return-type Return type `Line` of `OrderBase.get` is incompatible with parent return type `Order` of `Base.get` | Returns type `Line` but parent expects `Order` | Parent method `Base.get` return type defined here | In class `OrderBase` | Return types must be covariant: child must return equal or narrower types than parent. | Change the return type to be compatible with the parent method.",
+            "24:21 incompatible-property-type Property `OrderBase.item` has an incompatible type declaration. | This type `Line?` is incompatible with the parent's type. | The parent property is defined with type `Order?` here. | PHP requires property types to be invariant, meaning the type declaration in a child class must be exactly the same as in the parent class. | Change the type of `item` to `Order?` to match the parent property.",
             "37:40 incompatible-parameter-type Parameter `item` of `ListBase.put` must take at least PHP's `mixed`, the type `Base.put` erases it to. | Erases to PHP's `array`. | `Base.put` takes PHP's `mixed` once its type parameters are erased. | PHP# erases type parameters when it compiles, and PHP refuses a parameter narrower than the one it overrides when it links the class. | Write `item` with a type that erases to PHP's `mixed`.",
             "35:21 incompatible-property-type Property `ListBase.item` must have PHP's `mixed`, the type `Base.item` erases to. | Erases to PHP's `array|null`. | Erases to PHP's `mixed`. | PHP# erases type parameters when it compiles, and PHP requires a property to keep the type of the property it overrides. | Write `item` with a type that erases to PHP's `mixed`.",
         ]
@@ -6382,8 +6382,9 @@ fn a_null_guard_on_an_unbounded_type_parameter_rejects_no_nullable_parameter() {
 }
 
 /// A null check on a type parameter names the type parameter: `item == null`, `item ?? other` and `item?.total` on a
-/// `TItem : Order` that is never null, and `number == item` on a `TItem` that may be null. The `int?` that `total`
-/// declares and never fills with null is named as PHP# writes it too. The PHP twin keeps Mago's text.
+/// `TItem : Order` that is never null. `number == item` on a `TItem` that may be null is lifted equality, so it adds no
+/// issue. The `int?` that `total` declares and never fills with null is named as PHP# writes it too. The PHP twin keeps
+/// Mago's text.
 #[test]
 fn a_null_check_on_a_type_parameter_names_it() {
     let sharp = "namespace Demo;\n\npublic class Order\n{\n    public int total = 0;\n}\n\npublic class Box<TItem : Order>\n{\n    public bool empty(TItem item) => item == null;\n\n    public Order pick(TItem item, Order other) => item ?? other;\n\n    public int? total(TItem item) => item?.total;\n}\n\npublic class Holder<TItem>\n{\n    public bool same(int number, TItem item) => number == item;\n}\n";
@@ -6401,11 +6402,10 @@ fn a_null_check_on_a_type_parameter_names_it() {
     assert_eq!(
         worded(("src/Demo/Box.sharp", sharp), &[]),
         [
-            "10:38 redundant-comparison Redundant `==` comparison: `TItem` is never `null`. | This is `TItem`, which is never `null` | This null check cannot matter | In PHP# a type holds null only when written with `?` (spec section 24), so a `?` or a null check that cannot matter is an error (spec section 14.4). | Remove the null check.",
-            "12:51 redundant-null-coalesce Redundant null coalesce: left-hand side can never be `null` or undefined. | This expression (type `TItem`) is never `null` or undefined | This right-hand side will never be evaluated | The null coalesce operator `??` only evaluates the right-hand side if the left-hand side is `null` or not set. | In PHP# a type holds null only when written with `?` (spec section 24), so a `?` or a null check that cannot matter is an error (spec section 14.4). | Consider removing the `??` operator and the right-hand side expression.",
-            "14:42 redundant-nullsafe-operator Redundant nullsafe operator (`?.`) used on an expression that is never `null`. | Nullsafe operator `?.` is unnecessary here | This expression (type `TItem`) is never `null` | The nullsafe operator (`?.`) short-circuits the access if the object is `null`. Since this expression is guaranteed not to be `null`, this check is unnecessary. | In PHP# a type holds null only when written with `?` (spec section 24), so a `?` or a null check that cannot matter is an error (spec section 14.4). | Consider using the direct property access operator (`.`) for clarity.",
-            "14:12 overly-wide-return-type Declared return type `int?` for `total` has unused branches: `null`. | Declared as `int?`, but `null` is never returned. | No path in this body produces that value. | A return type wider than the body produces is misleading. | Callers must handle branches the function never actually returns. | It can hide dead code paths meant to produce the missing variant. | In PHP# a type holds null only when written with `?` (spec section 24), so a `?` or a null check that cannot matter is an error (spec section 14.4). | Remove `null` from the return type, giving `int`.",
-            "19:59 possibly-null-operand Right operand in `==` comparison might be `null` (type `TItem`). | This might be `null` | If this operand is `null` at runtime, PHP's specific comparison rules for `null` with `==` will apply. | Ensure this operand is non-null or that comparison with `null` is intended and handled safely.",
+            "10:38 redundant-comparison Redundant `==` comparison: `TItem` is never `null`. | This is `TItem`, which is never `null` | This null check cannot matter | In PHP# a type holds null only when written with `?`, so a `?` or a null check that cannot matter is an error. | Remove the null check.",
+            "12:51 redundant-null-coalesce Redundant null coalesce: left-hand side can never be `null` or undefined. | This expression (type `TItem`) is never `null` or undefined | This right-hand side will never be evaluated | The null coalesce operator `??` only evaluates the right-hand side if the left-hand side is `null` or not set. | In PHP# a type holds null only when written with `?`, so a `?` or a null check that cannot matter is an error. | Consider removing the `??` operator and the right-hand side expression.",
+            "14:42 redundant-nullsafe-operator Redundant nullsafe operator (`?.`) used on an expression that is never `null`. | Nullsafe operator `?.` is unnecessary here | This expression (type `TItem`) is never `null` | The nullsafe operator (`?.`) short-circuits the access if the object is `null`. Since this expression is guaranteed not to be `null`, this check is unnecessary. | In PHP# a type holds null only when written with `?`, so a `?` or a null check that cannot matter is an error. | Consider using the direct property access operator (`.`) for clarity.",
+            "14:12 overly-wide-return-type Declared return type `int?` for `total` has unused branches: `null`. | Declared as `int?`, but `null` is never returned. | No path in this body produces that value. | A return type wider than the body produces is misleading. | Callers must handle branches the function never actually returns. | It can hide dead code paths meant to produce the missing variant. | In PHP# a type holds null only when written with `?`, so a `?` or a null check that cannot matter is an error. | Remove `null` from the return type, giving `int`.",
         ]
     );
 }
@@ -6427,7 +6427,7 @@ fn a_spread_of_a_type_parameter_names_it_and_the_list_to_spread() {
     assert_eq!(
         worded(("src/Demo/Box.sharp", sharp), &[]),
         [
-            "10:52 invalid-argument Cannot spread a value of type `TItem`: PHP# spreads only a list. | Type `TItem` is not a list | Spec section 7 spreads an existing list into a call, as in `Money.sum(...prices)`. | Spread a list, such as a variadic parameter or a `List<int>` from plain PHP."
+            "10:52 invalid-argument Cannot spread a value of type `TItem`: PHP# spreads only a list. | Type `TItem` is not a list | PHP# spreads an existing list into a call, as in `Money.sum(...prices)`. | Spread a list, such as a variadic parameter or a `list<int>` from plain PHP."
         ]
     );
 }
@@ -6543,8 +6543,8 @@ fn a_method_returning_self_returns_its_receivers_type_arguments() {
     assert_eq!(
         explained(("src/Demo/Box.sharp", sharp), &[]),
         [
-            "9:43 invalid-return-statement Invalid return type for function `Demo\\Box::swap`: expected `Box<TItem>`, but found `Box<Order>`. Change the return value to match `Box<TItem>`, or update the function's return type declaration.",
-            "21:34 invalid-argument Invalid argument type for argument #1 of `Demo\\Box::put`: expected `int`, but found `\"one\"`. Change the argument value to match `int`, or update the parameter's type declaration.",
+            "9:43 invalid-return-statement Invalid return type for method `Box.swap`: expected `Box<TItem>`, but found `Box<Order>`. Change the return value to match `Box<TItem>`, or update the method's return type declaration.",
+            "21:34 invalid-argument Invalid argument type for argument #1 of `Box.put`: expected `int`, but found `string`. Change the argument value to match `int`, or update the parameter's type declaration.",
         ]
     );
 }
@@ -6599,7 +6599,7 @@ fn a_class_type_names_a_generic_class_without_its_type_arguments() {
     assert_eq!(
         explained(("src/Demo/Report.sharp", sharp), &[("src/Demo/Classes.sharp", classes)]),
         [
-            "11:48 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `int`, but found `Class<Box>`. Change the argument value to match `int`, or update the parameter's type declaration."
+            "11:48 invalid-argument Invalid argument type for argument #1 of `Report.keep`: expected `int`, but found `Class<Box>`. Change the argument value to match `int`, or update the parameter's type declaration."
         ]
     );
 }
@@ -6646,8 +6646,8 @@ fn self_inherited_by_a_subclass_is_the_subclass_with_its_own_type_arguments() {
     assert_eq!(
         explained(("src/Demo/Box.sharp", sharp), &[]),
         [
-            "31:27 invalid-argument Invalid argument type for argument #1 of `Demo\\Tagged::tag`: expected `string`, but found `1`. Change the argument value to match `string`, or update the parameter's type declaration.",
-            "32:21 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `int`, but found `OrderBox`. Change the argument value to match `int`, or update the parameter's type declaration.",
+            "31:27 invalid-argument Invalid argument type for argument #1 of `Tagged.tag`: expected `string`, but found `int`. Change the argument value to match `string`, or update the parameter's type declaration.",
+            "32:21 invalid-argument Invalid argument type for argument #1 of `Report.keep`: expected `int`, but found `OrderBox`. Change the argument value to match `int`, or update the parameter's type declaration.",
         ]
     );
 }
@@ -6781,8 +6781,8 @@ fn a_method_value_is_specialized_for_its_receiver() {
     assert_eq!(
         explained(("src/Demo/Box.sharp", sharp), &[]),
         [
-            "24:62 invalid-return-statement Invalid return type for function `Demo\\Report::wrong`: expected `Function<string?()>`, but found `Function<int?()>`. Change the return value to match `Function<string?()>`, or update the function's return type declaration.",
-            "34:64 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::text`: expected `Function<string?()>`, but found `Function<int?()>`. Change the argument value to match `Function<string?()>`, or update the parameter's type declaration.",
+            "24:62 invalid-return-statement Invalid return type for method `Report.wrong`: expected `Function<string?()>`, but found `Function<int?()>`. Change the return value to match `Function<string?()>`, or update the method's return type declaration.",
+            "34:64 invalid-argument Invalid argument type for argument #1 of `Report.text`: expected `Function<string?()>`, but found `Function<int?()>`. Change the argument value to match `Function<string?()>`, or update the parameter's type declaration.",
         ]
     );
 }
@@ -6806,7 +6806,7 @@ fn a_method_value_of_a_receiver_naming_its_own_type_parameter_replaces_it_once()
     assert_eq!(
         explained(("src/Demo/Box.sharp", sharp), &[]),
         [
-            "9:80 invalid-return-statement Invalid return type for function `Demo\\Box::wrong`: expected `Function<Box<List<List<TItem>>>()>`, but found `Function<Box<List<TItem>>()>`. Change the return value to match `Function<Box<List<List<TItem>>>()>`, or update the function's return type declaration."
+            "9:80 invalid-return-statement Invalid return type for method `Box.wrong`: expected `Function<Box<List<List<TItem>>>()>`, but found `Function<Box<List<TItem>>()>`. Change the return value to match `Function<Box<List<List<TItem>>>()>`, or update the method's return type declaration."
         ]
     );
 }
@@ -6885,7 +6885,7 @@ fn a_method_value_of_a_subclass_that_adds_a_type_parameter_is_its_receiver() {
     assert_eq!(
         explained(("src/Demo/Box.sharp", sharp), &[]),
         [
-            "29:62 invalid-return-statement Invalid return type for function `Demo\\Report::orders`: expected `Function<int()>`, but found `Function<OrderBox()>`. Change the return value to match `Function<int()>`, or update the function's return type declaration."
+            "29:62 invalid-return-statement Invalid return type for method `Report.orders`: expected `Function<int()>`, but found `Function<OrderBox()>`. Change the return value to match `Function<int()>`, or update the method's return type declaration."
         ]
     );
 }
@@ -6907,8 +6907,8 @@ fn self_in_a_receivers_type_argument_stays_the_class_that_wrote_it() {
     assert_eq!(
         explained(("src/Demo/Node.sharp", sharp), &[]),
         [
-            "7:47 less-specific-return-statement Returned type `Function<Node?()>` is less specific than the declared return type `Function<Tree<Node>?()>` for function `Demo\\Node::wrong`. Consider returning a value that more precisely matches the declared `Function<Tree<Node>?()>` type, or adjust the function's return type declaration if the broader type is intended.",
-            "9:36 less-specific-return-statement Returned type `Node?` is less specific than the declared return type `Tree<Node>?` for function `Demo\\Node::called`. Consider returning a value that more precisely matches the declared `Tree<Node>?` type, or adjust the function's return type declaration if the broader type is intended.",
+            "7:47 less-specific-return-statement Returned type `Function<Node?()>` is less specific than the declared return type `Function<Tree<Node>?()>` for method `Node.wrong`. Consider returning a value that more precisely matches the declared `Function<Tree<Node>?()>` type, or adjust the method's return type declaration if the broader type is intended.",
+            "9:36 less-specific-return-statement Returned type `Node?` is less specific than the declared return type `Tree<Node>?` for method `Node.called`. Consider returning a value that more precisely matches the declared `Tree<Node>?` type, or adjust the method's return type declaration if the broader type is intended.",
         ]
     );
 }
@@ -6927,11 +6927,11 @@ fn a_call_and_its_method_value_give_one_type_on_every_receiver() {
     let sharp = "namespace Demo;\n\nimport Lib.Invoice;\n\npublic class Order\n{\n}\n\npublic interface Named\n{\n    public string name();\n}\n\npublic interface Copyable\n{\n    public Self copy();\n}\n\npublic class Plain\n{\n    public Self same() => this;\n}\n\npublic class Box<TItem>\n{\n    public Self same() => this;\n\n    public bool nested(Box<List<TItem>> boxes) => boxes.same();\n\n    public Function<bool()> nestedValue(Box<List<TItem>> boxes) => boxes.same;\n\n    public bool own() => this.same();\n\n    public Function<bool()> ownValue() => this.same;\n}\n\npublic class OrderBox : Box<Order>\n{\n}\n\npublic class Pair<TKey, TValue> : Box<TKey>\n{\n    public TValue? value() => null;\n}\n\npublic abstract class Node\n{\n    public Self same() => this;\n\n    public abstract Tree<Self> children();\n\n    public bool tree() => this.children().same();\n\n    public Function<bool()> treeValue() => this.children().same;\n\n    public bool item() => this.children().first();\n\n    public Function<bool()> itemValue() => this.children().first;\n\n    public bool stored()\n    {\n        let first = this.children().first;\n        return first();\n    }\n}\n\npublic abstract class Tree<out TItem> : Node\n{\n    public TItem? first() => null;\n}\n\npublic class Report\n{\n    public static bool plain(Plain plain) => plain.same();\n\n    public static Function<bool()> plainValue(Plain plain) => plain.same;\n\n    public static bool boxed(Box<int> box) => box.same();\n\n    public static Function<bool()> boxedValue(Box<int> box) => box.same;\n\n    public static bool orders(OrderBox orders) => orders.same();\n\n    public static Function<bool()> ordersValue(OrderBox orders) => orders.same;\n\n    public static bool pairs(Pair<int, string> pair) => pair.same();\n\n    public static Function<bool()> pairsValue(Pair<int, string> pair) => pair.same;\n\n    public static bool bounded<TBox : Box<int>>(TBox box) => box.same();\n\n    public static Function<bool()> boundedValue<TBox : Box<int>>(TBox box) => box.same;\n\n    public static bool named<TBox : Box<int> & Named>(TBox box) => box.same();\n\n    public static Function<bool()> namedValue<TBox : Box<int> & Named>(TBox box) => box.same;\n\n    public static bool copied<TItem : Order & Copyable>(TItem item) => item.copy();\n\n    public static Function<bool()> copiedValue<TItem : Order & Copyable>(TItem item) => item.copy;\n\n    public static bool copiedBox<TBox : Box<int> & Copyable>(TBox box) => box.copy();\n\n    public static Function<bool()> copiedBoxValue<TBox : Box<int> & Copyable>(TBox box) => box.copy;\n\n    public static bool fluent(Invoice invoice) => invoice.me();\n\n    public static Function<bool()> fluentValue(Invoice invoice) => invoice.me;\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Invoice;\n\nclass Order\n{\n}\n\ninterface Named\n{\n    public function name(): string;\n}\n\ninterface Copyable\n{\n    public function copy(): static;\n}\n\nclass Plain\n{\n    public function same(): static\n    {\n        return $this;\n    }\n}\n\n/** @template TItem */\nclass Box\n{\n    public function same(): static\n    {\n        return $this;\n    }\n\n    /** @param Box<list<TItem>> $boxes */\n    public function nested(Box $boxes): bool\n    {\n        return $boxes->same();\n    }\n\n    /**\n     * @param Box<list<TItem>> $boxes\n     * @return \\Closure(): bool\n     */\n    public function nestedValue(Box $boxes): \\Closure\n    {\n        return $boxes->same(...);\n    }\n\n    public function own(): bool\n    {\n        return $this->same();\n    }\n\n    /** @return \\Closure(): bool */\n    public function ownValue(): \\Closure\n    {\n        return $this->same(...);\n    }\n}\n\n/** @extends Box<Order> */\nclass OrderBox extends Box\n{\n}\n\n/**\n * @template TKey\n * @template TValue\n * @extends Box<TKey>\n */\nclass Pair extends Box\n{\n    /** @return TValue|null */\n    public function value(): mixed\n    {\n        return null;\n    }\n}\n\nabstract class Node\n{\n    public function same(): static\n    {\n        return $this;\n    }\n\n    /** @return Tree<static> */\n    abstract public function children(): Tree;\n\n    public function tree(): bool\n    {\n        return $this->children()->same();\n    }\n\n    /** @return \\Closure(): bool */\n    public function treeValue(): \\Closure\n    {\n        return $this->children()->same(...);\n    }\n\n    public function item(): bool\n    {\n        return $this->children()->first();\n    }\n\n    /** @return \\Closure(): bool */\n    public function itemValue(): \\Closure\n    {\n        return $this->children()->first(...);\n    }\n\n    public function stored(): bool\n    {\n        $first = $this->children()->first(...);\n        return $first();\n    }\n}\n\n/** @template-covariant TItem */\nabstract class Tree extends Node\n{\n    /** @return TItem|null */\n    public function first(): mixed\n    {\n        return null;\n    }\n}\n\nclass Report\n{\n    public static function plain(Plain $plain): bool\n    {\n        return $plain->same();\n    }\n\n    /** @return \\Closure(): bool */\n    public static function plainValue(Plain $plain): \\Closure\n    {\n        return $plain->same(...);\n    }\n\n    /** @param Box<int> $box */\n    public static function boxed(Box $box): bool\n    {\n        return $box->same();\n    }\n\n    /**\n     * @param Box<int> $box\n     * @return \\Closure(): bool\n     */\n    public static function boxedValue(Box $box): \\Closure\n    {\n        return $box->same(...);\n    }\n\n    public static function orders(OrderBox $orders): bool\n    {\n        return $orders->same();\n    }\n\n    /** @return \\Closure(): bool */\n    public static function ordersValue(OrderBox $orders): \\Closure\n    {\n        return $orders->same(...);\n    }\n\n    /** @param Pair<int, string> $pair */\n    public static function pairs(Pair $pair): bool\n    {\n        return $pair->same();\n    }\n\n    /**\n     * @param Pair<int, string> $pair\n     * @return \\Closure(): bool\n     */\n    public static function pairsValue(Pair $pair): \\Closure\n    {\n        return $pair->same(...);\n    }\n\n    /**\n     * @template TBox of Box<int>\n     * @param TBox $box\n     */\n    public static function bounded(Box $box): bool\n    {\n        return $box->same();\n    }\n\n    /**\n     * @template TBox of Box<int>\n     * @param TBox $box\n     * @return \\Closure(): bool\n     */\n    public static function boundedValue(Box $box): \\Closure\n    {\n        return $box->same(...);\n    }\n\n    /**\n     * @template TBox of Box<int>&Named\n     * @param TBox $box\n     */\n    public static function named(Box $box): bool\n    {\n        return $box->same();\n    }\n\n    /**\n     * @template TBox of Box<int>&Named\n     * @param TBox $box\n     * @return \\Closure(): bool\n     */\n    public static function namedValue(Box $box): \\Closure\n    {\n        return $box->same(...);\n    }\n\n    /**\n     * @template TItem of Order&Copyable\n     * @param TItem $item\n     */\n    public static function copied(Order $item): bool\n    {\n        return $item->copy();\n    }\n\n    /**\n     * @template TItem of Order&Copyable\n     * @param TItem $item\n     * @return \\Closure(): bool\n     */\n    public static function copiedValue(Order $item): \\Closure\n    {\n        return $item->copy(...);\n    }\n\n    /**\n     * @template TBox of Box<int>&Copyable\n     * @param TBox $box\n     */\n    public static function copiedBox(Box $box): bool\n    {\n        return $box->copy();\n    }\n\n    /**\n     * @template TBox of Box<int>&Copyable\n     * @param TBox $box\n     * @return \\Closure(): bool\n     */\n    public static function copiedBoxValue(Box $box): \\Closure\n    {\n        return $box->copy(...);\n    }\n\n    public static function fluent(Invoice $invoice): bool\n    {\n        return $invoice->me();\n    }\n\n    /** @return \\Closure(): bool */\n    public static function fluentValue(Invoice $invoice): \\Closure\n    {\n        return $invoice->me(...);\n    }\n}\n";
     let others = [("src/Lib/Invoice.php", invoice)];
-    let gives = |function: &str, found: &str| {
+    let gives = |method: &str, found: &str| {
         vec![
-            format!("Invalid return type for function `Demo\\{function}`: expected `bool`, but found `{found}`."),
+            format!("Invalid return type for method `{method}`: expected `bool`, but found `{found}`."),
             format!(
-                "Invalid return type for function `Demo\\{function}Value`: expected `Function<bool()>`, but found `Function<{found}()>`."
+                "Invalid return type for method `{method}Value`: expected `Function<bool()>`, but found `Function<{found}()>`."
             ),
         ]
     };
@@ -6973,26 +6973,26 @@ fn a_call_and_its_method_value_give_one_type_on_every_receiver() {
     assert_eq!(
         messages(("src/Demo/Report.sharp", sharp), &others),
         [
-            gives("Box::nested", "Box<List<TItem>>"),
-            gives("Box::own", "Box<TItem>"),
-            gives("Node::tree", "Tree<Node>"),
+            gives("Box.nested", "Box<List<TItem>>"),
+            gives("Box.own", "Box<TItem>"),
+            gives("Node.tree", "Tree<Node>"),
             vec![
-                "Function `Demo\\Node::item` is declared to return `bool` but possibly returns a nullable value (inferred as `Node?`).".to_owned(),
+                "Method `Node.item` is declared to return `bool` but possibly returns a nullable value (inferred as `Node?`).".to_owned(),
             ],
-            gives("Node::item", "Node?"),
+            gives("Node.item", "Node?"),
             vec![
-                "Function `Demo\\Node::stored` is declared to return `bool` but possibly returns a nullable value (inferred as `Node?`).".to_owned(),
-                "Invalid return type for function `Demo\\Node::stored`: expected `bool`, but found `Node?`.".to_owned(),
+                "Method `Node.stored` is declared to return `bool` but possibly returns a nullable value (inferred as `Node?`).".to_owned(),
+                "Invalid return type for method `Node.stored`: expected `bool`, but found `Node?`.".to_owned(),
             ],
-            gives("Report::plain", "Plain"),
-            gives("Report::boxed", "Box<int>"),
-            gives("Report::orders", "OrderBox"),
-            gives("Report::pairs", "Pair<int, string>"),
-            gives("Report::bounded", "Box<int>"),
-            gives("Report::named", "Box<int> & Named"),
-            gives("Report::copied", "Order & Copyable"),
-            gives("Report::copiedBox", "Box<int> & Copyable"),
-            gives("Report::fluent", "Invoice"),
+            gives("Report.plain", "Plain"),
+            gives("Report.boxed", "Box<int>"),
+            gives("Report.orders", "OrderBox"),
+            gives("Report.pairs", "Pair<int, string>"),
+            gives("Report.bounded", "Box<int>"),
+            gives("Report.named", "Box<int> & Named"),
+            gives("Report.copied", "Order & Copyable"),
+            gives("Report.copiedBox", "Box<int> & Copyable"),
+            gives("Report.fluent", "Invoice"),
         ]
         .concat()
     );
@@ -7014,7 +7014,7 @@ fn a_derived_type_nested_in_a_php_return_type_reads_the_type_argument_of_its_cal
     );
     assert_eq!(
         messages(("src/Demo/Report.sharp", sharp), &others),
-        ["Invalid return type for function `Demo\\Report::nested`: expected `bool`, but found `List<string>`."]
+        ["Invalid return type for method `Report.nested`: expected `bool`, but found `List<string>`."]
     );
 }
 
@@ -7101,7 +7101,7 @@ fn a_conditional_return_of_a_receiver_naming_its_own_type_parameter_replaces_it_
     );
     assert_eq!(
         messages(("src/Demo/Pair.sharp", sharp), &others),
-        ["Invalid return type for function `Demo\\Pair::read`: expected `bool`, but found `List<TKey>`."]
+        ["Invalid return type for method `Pair.read`: expected `bool`, but found `List<TKey>`."]
     );
 }
 
@@ -7125,9 +7125,9 @@ fn calling_a_stored_method_value_keeps_the_self_of_its_receiver() {
     assert_eq!(
         messages(("src/Demo/Node.sharp", sharp), &[]),
         [
-            "Function `Demo\\Node::called` is declared to return `bool` but possibly returns a nullable value (inferred as `Node?`).",
-            "Invalid return type for function `Demo\\Node::called`: expected `bool`, but found `Node?`.",
-            "Invalid return type for function `Demo\\Node::picked`: expected `bool`, but found `5`.",
+            "Method `Node.called` is declared to return `bool` but possibly returns a nullable value (inferred as `Node?`).",
+            "Invalid return type for method `Node.called`: expected `bool`, but found `Node?`.",
+            "Invalid return type for method `Node.picked`: expected `bool`, but found `int`.",
         ]
     );
 }
@@ -7150,7 +7150,7 @@ fn a_conditional_return_compares_its_operands_as_the_receiver_gives_them() {
     );
     assert_eq!(
         messages(("src/Demo/Report.sharp", sharp), &others),
-        ["Invalid return type for function `Demo\\Report::countOther`: expected `int`, but found `int|string`."]
+        ["Invalid return type for method `Report.countOther`: expected `int`, but found `int|string`."]
     );
 }
 
