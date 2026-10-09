@@ -77,15 +77,6 @@ pub fn build_site(root: &Path) -> Result<()> {
     let language_labels =
         config.languages.iter().map(|language| (language.code.clone(), language.name.clone())).collect::<Vec<_>>();
 
-    let benchmarks = match crate::benchmarks::fetch() {
-        Ok(summary) => Some(summary),
-        Err(error) => {
-            tracing::warn!("Benchmark data unavailable; home stats will fall back to static text ({error}).");
-            None
-        }
-    };
-    let benchmark_tokens = build_benchmark_tokens(benchmarks.as_ref());
-
     pages.sort_by(|left, right| {
         left.language.cmp(&right.language).then_with(|| left.logical_path.cmp(&right.logical_path))
     });
@@ -136,7 +127,6 @@ pub fn build_site(root: &Path) -> Result<()> {
         // accurate without contributor friction.
         context.insert("is_default_language", &(page.language == config.default_language));
         let rewritten_html = rewrite_content_urls(&page.html, &p2r, &current_version, &page.language, &language_codes)?;
-        let rewritten_html = apply_benchmark_tokens(&rewritten_html, &benchmark_tokens);
         context.insert("content", &rewritten_html);
         context.insert("is_homepage", &page.logical_path.is_empty());
         context.insert("has_diagrams", &page.html.contains("language-mermaid"));
@@ -518,68 +508,6 @@ fn rebase_content_link(attribute: &str, path_to_root: &str, logical: &str, suffi
     let trimmed = logical.trim_end_matches('/');
     let target = format!("{path_to_root}{trimmed}");
     format!(r#"{attribute}="{target}{suffix}""#)
-}
-
-fn build_benchmark_tokens(summary: Option<&crate::benchmarks::BenchmarkSummary>) -> BTreeMap<String, String> {
-    use crate::benchmarks::format_seconds;
-
-    let mut tokens = BTreeMap::new();
-    let placeholder = "n/a".to_string();
-
-    let mut insert_category = |prefix: &str, cat: Option<&crate::benchmarks::CategorySummary>| {
-        tokens.insert(
-            format!("{prefix}_MAGO_TIME"),
-            cat.map(|c| format_seconds(c.mago_seconds)).unwrap_or_else(|| placeholder.clone()),
-        );
-        tokens.insert(
-            format!("{prefix}_FACTOR"),
-            cat.map(|c| c.factor.to_string()).unwrap_or_else(|| placeholder.clone()),
-        );
-        let peer_a = cat.and_then(|c| c.peers.first());
-        let peer_b = cat.and_then(|c| c.peers.get(1));
-        tokens.insert(
-            format!("{prefix}_PEER_A"),
-            peer_a.map(|p| format!("{} {}", p.name, format_seconds(p.seconds))).unwrap_or_default(),
-        );
-        tokens.insert(
-            format!("{prefix}_PEER_B"),
-            peer_b.map(|p| format!("{} {}", p.name, format_seconds(p.seconds))).unwrap_or_default(),
-        );
-    };
-
-    insert_category("BENCH_ANALYZER", summary.map(|s| &s.analyzer));
-    insert_category("BENCH_LINTER", summary.map(|s| &s.linter));
-    insert_category("BENCH_FORMATTER", summary.map(|s| &s.formatter));
-
-    tokens.insert(
-        "BENCH_PROJECT_LABEL".to_string(),
-        summary.map(|s| s.project_label.to_string()).unwrap_or_else(|| "WordPress".to_string()),
-    );
-    tokens.insert(
-        "BENCH_PROJECT_LOC".to_string(),
-        summary.map(|s| s.project_loc.to_string()).unwrap_or_else(|| "7M".to_string()),
-    );
-    tokens.insert(
-        "BENCH_AGGREGATION_DATE".to_string(),
-        summary.map(|s| s.aggregation_date.clone()).unwrap_or_else(|| placeholder.clone()),
-    );
-    tokens.insert(
-        "BENCH_MAGO_VERSION".to_string(),
-        summary.map(|s| s.mago_version.clone()).unwrap_or_else(|| placeholder.clone()),
-    );
-
-    tokens
-}
-
-fn apply_benchmark_tokens(html: &str, tokens: &BTreeMap<String, String>) -> String {
-    let mut output = html.to_string();
-    for (key, value) in tokens {
-        let needle = format!("{{{{{key}}}}}");
-        if output.contains(&needle) {
-            output = output.replace(&needle, value);
-        }
-    }
-    output
 }
 
 fn normalize_content_path(path: &str) -> String {
