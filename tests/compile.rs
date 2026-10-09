@@ -320,6 +320,33 @@ fn compiles_that_start_together_on_an_empty_cache_each_prove_their_law_and_leave
 }
 
 #[test]
+fn compile_rebuilds_a_library_build_that_lost_its_lakefile_or_its_runner_and_proves_its_law() {
+    for lost in ["lakefile.toml", ".lake/build/bin"] {
+        let cache = tempfile::tempdir().unwrap();
+        let compile_in_cache = |project: &tempfile::TempDir| {
+            command(project.path(), "never").env("XDG_CACHE_HOME", cache.path()).output().unwrap()
+        };
+        let output = compile_in_cache(&lawful_project(&[("app/Shared/Money.sharp", LAWFUL_MONEY)]));
+        assert!(output.status.success(), "{}", printed(&output));
+        let library = std::fs::read_dir(cache.path().join("mago/lean")).unwrap().next().unwrap().unwrap().path();
+        let lost_path = library.join(lost);
+        if lost_path.is_dir() {
+            std::fs::remove_dir_all(&lost_path).unwrap();
+        } else {
+            std::fs::remove_file(&lost_path).unwrap();
+        }
+
+        let project = lawful_project(&[("app/Shared/Money.sharp", LAWFUL_MONEY)]);
+        let output = compile_in_cache(&project);
+
+        assert!(output.status.success(), "{lost}: {}", printed(&output));
+        assert_eq!(read(project.path(), "app/Shared/Money.lean"), MONEY_PROOF);
+        assert!(lost_path.exists(), "the library build has {lost} again");
+        assert_eq!(std::fs::read_dir(cache.path().join("mago/lean")).unwrap().count(), 1, "one library build is left");
+    }
+}
+
+#[test]
 fn a_second_compile_leaves_the_proof_byte_identical_and_starts_no_lean_process() {
     let directory = lawful_project(&[("app/Shared/Money.sharp", LAWFUL_MONEY)]);
     let root = directory.path();
