@@ -4,33 +4,36 @@
 //! analyzed. Each body records what it does by itself in an [`EffectSummary`] during its file's analysis, and
 //! [`Effects::solve`] combines every summary once all files are analyzed.
 
+use std::cell::OnceCell;
 use std::collections::BTreeSet;
-use std::fmt;
 
 use foldhash::HashMap;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
+use mago_names::display_sharp_member;
 use mago_reporting::IssueCollection;
 use mago_span::Span;
 use mago_word::Word;
+use mago_word::WordMap;
 use mago_word::ascii_lowercase_word;
 use mago_word::empty_word;
-use mago_word::word;
 
 use crate::graph::strongly_connected_parts;
+use crate::utils::names::sharp_class_like_name;
 
 pub(crate) mod check;
 pub(crate) mod summary;
 
 /// A reason a body is impure other than a change of state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Effect {
+pub(crate) enum Effect {
     /// An effect an `extern` declaration lists for the plain PHP called, named by its class, such as `Sharp\Http`.
     Foreign(Word),
-    /// A call into plain PHP that no `extern` declaration covers, with the callee an `extern` would declare as PHP#
-    /// writes it, such as `trim` or `Bag.__call`. A call of a plain PHP property holding a function has none, because
-    /// an `extern` declares a class's members, not the code a property holds.
-    Unknown(Option<Word>),
+    /// A call into plain PHP that no `extern` declaration covers, with the callee an `extern` would declare as its full
+    /// class name and its member: `Lib\Bag` and `__call`, an empty class and `trim` for a function, and the class and
+    /// an empty member for a constructor. A call of a plain PHP property holding a function has none, because an
+    /// `extern` declares a class's members, not the code a property holds.
+    Unknown(Option<(Word, Word)>),
 }
 
 /// The state a body changes, named by the root of the place it writes. The same roots name the values a call passes.
@@ -70,47 +73,65 @@ pub(crate) struct Call {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EffectSummary {
     pub(crate) body: Body,
-    /// The body as messages name it: `Order.price`, or `Cart.total` for an accessor of `total`.
-    pub(crate) name: Word,
-    /// Each effect, with the call that has it and that call's callee as PHP# writes it.
-    pub(crate) effects: Vec<(Effect, Span, Word)>,
+    /// The body's member as messages name it: `price`, `total` for an accessor of `total`, or `operator +`.
+    pub(crate) member: Word,
+    /// Each effect, with the call that has it and that call's callee as its full class name and its member, with an
+    /// empty class for a function and an empty member for a constructor.
+    pub(crate) effects: Vec<(Effect, Span, (Word, Word))>,
     pub(crate) calls: Vec<Call>,
     /// Each change, with the write and the place written as the source writes it.
     pub(crate) changes: Vec<(Changed, Span, Word)>,
+    /// The name each import of the body's file gives its class, as `Context::imported_names` holds them, so a message
+    /// about the body names classes as its file does.
+    pub(crate) imports: WordMap<Word>,
 }
 
-/// Why a body is impure, as the first call or write in it that leads there.
+/// Why a body is impure, as the first call or write in it that leads there. Each name is a full class name and a
+/// member, with an empty class for a function or a place written, and an empty member for a constructor.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Impurity {
+pub(crate) struct Impurity {
     /// The call or write in the checked body.
-    pub span: Span,
+    pub(crate) span: Span,
     /// The PHP# bodies the call reaches, from the one the checked body calls down to the one that is impure by
     /// itself. Empty when the checked body is impure by itself.
-    pub path: Vec<Word>,
-    /// The plain PHP callee as PHP# writes it, such as `Clock.now`, or the place written, such as `this.count`.
-    pub cause: Word,
+    pub(crate) path: Vec<(Word, Word)>,
+    /// The plain PHP callee, such as `Lib\Clock` and `now`, or the place written, such as `this.count`.
+    pub(crate) cause: (Word, Word),
     /// The effect of the call, or `None` when the cause is a place written.
-    pub effect: Option<Effect>,
+    pub(crate) effect: Option<Effect>,
 }
 
-impl fmt::Display for Impurity {
-    /// Writes the reason as a sentence's predicate, such as "calls `getenv`, which has no `extern` declaration".
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let cause = self.cause;
-        match (self.path.last(), self.effect) {
+impl Impurity {
+    /// The reason as a sentence's predicate, such as "calls `getenv`, which has no `extern` declaration", with each
+    /// class named by `class_name`.
+    pub(crate) fn describe(&self, class_name: &dyn Fn(Word) -> String) -> String {
+        let cause = written(self.cause, class_name);
+        match (self.path.last().map(|body| written(*body, class_name)), self.effect) {
             (None, Some(Effect::Foreign(effect))) => {
-                write!(f, "calls `{cause}`, which has the effect `{}`", short_name(effect))
+                format!("calls `{cause}`, which has the effect `{}`", class_name(effect))
             }
-            (None, Some(Effect::Unknown(_))) => write!(f, "calls `{cause}`, which has no `extern` declaration"),
-            (None, None) => write!(f, "changes `{cause}`"),
+            (None, Some(Effect::Unknown(_))) => format!("calls `{cause}`, which has no `extern` declaration"),
+            (None, None) => format!("changes `{cause}`"),
             (Some(body), Some(Effect::Foreign(effect))) => {
-                write!(f, "reaches `{body}`, which calls `{cause}` with the effect `{}`", short_name(effect))
+                format!("reaches `{body}`, which calls `{cause}` with the effect `{}`", class_name(effect))
             }
             (Some(body), Some(Effect::Unknown(_))) => {
-                write!(f, "reaches `{body}`, which calls `{cause}` with no `extern` declaration")
+                format!("reaches `{body}`, which calls `{cause}` with no `extern` declaration")
             }
-            (Some(body), None) => write!(f, "reaches `{body}`, which changes `{cause}`"),
+            (Some(body), None) => format!("reaches `{body}`, which changes `{cause}`"),
         }
+    }
+}
+
+/// A class name and a member as a message writes them, the class named by `class_name`: `Clock.now`, `trim` with no
+/// class, and `Clock` with no member.
+fn written((class, member): (Word, Word), class_name: &dyn Fn(Word) -> String) -> String {
+    if class.is_empty() {
+        member.to_string()
+    } else if member.is_empty() {
+        class_name(class)
+    } else {
+        display_sharp_member(class_name(class), member)
     }
 }
 
@@ -125,7 +146,7 @@ enum Item {
 #[derive(Clone, Copy, Debug)]
 struct Origin {
     span: Span,
-    cause: Word,
+    cause: (Word, Word),
     via: Option<(usize, Item)>,
 }
 
@@ -133,7 +154,10 @@ struct Origin {
 #[derive(Debug)]
 pub struct Effects {
     bodies: Vec<Body>,
-    names: Vec<Word>,
+    /// Each body's lowercase class name and its member as messages name it.
+    names: Vec<(Word, Word)>,
+    /// The imports of each body's file, which name the classes of a message about the body.
+    imports: Vec<WordMap<Word>>,
     index: HashMap<Body, usize>,
     /// Each body's items, its own in source order first, and each once.
     solved: Vec<Vec<(Item, Origin)>>,
@@ -203,7 +227,7 @@ impl Effects {
                                 if !solved[body].iter().any(|(known, _)| *known == item) {
                                     let origin = Origin {
                                         span: call.span,
-                                        cause: empty_word(),
+                                        cause: (empty_word(), empty_word()),
                                         via: Some((target, callee_item)),
                                     };
                                     solved[body].push((item, origin));
@@ -222,35 +246,46 @@ impl Effects {
 
         Effects {
             bodies: summaries.iter().map(|summary| summary.body).collect(),
-            names: summaries.iter().map(|summary| summary.name).collect(),
+            names: summaries
+                .iter()
+                .map(|summary| match summary.body {
+                    Body::Method(class, _) | Body::Accessor(class, _, _) => (class, summary.member),
+                })
+                .collect(),
+            imports: summaries.iter().map(|summary| summary.imports.clone()).collect(),
             index,
             solved,
         }
     }
 
-    /// Why `method` is impure, or `None` when it has no effect and changes neither `this`, a parameter nor shared
-    /// state. A constructor's changes to `this` do not count, because its object is new.
+    /// Why `method` is impure, as a sentence's predicate that names classes as the method's file does, or `None` when
+    /// it has no effect and changes neither `this`, a parameter nor shared state. A constructor's changes to `this` do
+    /// not count, because its object is new.
     ///
     /// It answers only for a PHP# method with a body. It returns `None` for a function, a closure, a plain PHP method
     /// and a native `extern` method, whose effects no summary records.
     #[must_use]
-    pub fn impurity(&self, method: &FunctionLikeIdentifier) -> Option<Impurity> {
+    pub fn impurity(&self, codebase: &CodebaseMetadata, method: &FunctionLikeIdentifier) -> Option<String> {
         let FunctionLikeIdentifier::Method(class, method) = method else {
             return None;
         };
 
-        self.body_impurity(Body::Method(
-            ascii_lowercase_word(class.as_bytes()),
-            ascii_lowercase_word(method.as_bytes()),
-        ))
+        let body = Body::Method(ascii_lowercase_word(class.as_bytes()), ascii_lowercase_word(method.as_bytes()));
+        let imports = &self.imports[*self.index.get(&body)?];
+        let short_name_counts = OnceCell::new();
+
+        self.body_impurity(body).map(|impurity| {
+            impurity.describe(&|class| sharp_class_like_name(codebase, imports, &short_name_counts, class))
+        })
     }
 
     /// The issues of every effect rule. The getter rule reads only the solve, and the law rule reads which bodies are
-    /// laws from `codebase`.
+    /// laws from `codebase`. Each message names classes as the file of the getter or law it refuses does.
     #[must_use]
     pub fn issues(&self, codebase: &CodebaseMetadata) -> IssueCollection {
-        let mut issues = check::getters_must_be_pure(self);
-        issues.extend(check::laws_must_be_pure(self, codebase));
+        let short_name_counts = OnceCell::new();
+        let mut issues = check::getters_must_be_pure(self, codebase, &short_name_counts);
+        issues.extend(check::laws_must_be_pure(self, codebase, &short_name_counts));
 
         issues
     }
@@ -282,10 +317,13 @@ impl Effects {
         Some(Impurity { span, path, cause: origin.cause, effect })
     }
 
-    /// Each body with its message name and why it is impure.
-    fn impure_bodies(&self) -> impl Iterator<Item = (Body, Word, Impurity)> + '_ {
+    /// Each body with its member as messages name it, the imports of its file, and why it is impure.
+    fn impure_bodies(&self) -> impl Iterator<Item = (Body, Word, &WordMap<Word>, Impurity)> + '_ {
         self.bodies.iter().enumerate().filter(|(position, body)| self.index.get(body) == Some(position)).filter_map(
-            |(position, body)| self.body_impurity(*body).map(|impurity| (*body, self.names[position], impurity)),
+            |(position, body)| {
+                self.body_impurity(*body)
+                    .map(|impurity| (*body, self.names[position].1, &self.imports[position], impurity))
+            },
         )
     }
 }
@@ -294,7 +332,8 @@ impl Effects {
 fn own_items(summary: &EffectSummary) -> Vec<(Item, Origin)> {
     let mut items: Vec<(Item, Origin)> = Vec::new();
     let effects = summary.effects.iter().map(|(effect, span, cause)| (Item::Effect(*effect), *span, *cause));
-    let changes = summary.changes.iter().map(|(changed, span, place)| (Item::Changed(*changed), *span, *place));
+    let changes =
+        summary.changes.iter().map(|(changed, span, place)| (Item::Changed(*changed), *span, (empty_word(), *place)));
     for (item, span, cause) in effects.chain(changes) {
         if !items.iter().any(|(known, _)| *known == item) {
             items.push((item, Origin { span, cause, via: None }));
@@ -322,11 +361,4 @@ fn through(item: Item, call: &Call) -> impl Iterator<Item = Item> + '_ {
     };
 
     effect.into_iter().chain(roots.into_iter().map(Item::Changed))
-}
-
-/// The last segment of a class name: `Clock` for `Sharp\Clock`.
-pub(crate) fn short_name(name: Word) -> Word {
-    let bytes = name.as_bytes();
-
-    word(bytes.rsplit(|byte| *byte == b'\\').next().unwrap_or(bytes))
 }

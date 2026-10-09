@@ -27,7 +27,6 @@ use mago_syntax::cst::PropertyHookConcreteBody;
 use mago_syntax::cst::PropertyHookConcreteExpressionBody;
 use mago_syntax::cst::PropertyItem;
 use mago_word::Word;
-use mago_word::concat_word;
 use mago_word::word;
 
 use crate::analyzable::Analyzable;
@@ -37,7 +36,6 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::effects;
 use crate::effects::Body;
-use crate::effects::short_name;
 use crate::error::AnalysisError;
 use crate::statement::analyze_statements;
 use crate::statement::attributes::AttributeTarget;
@@ -352,7 +350,7 @@ fn record_accessor_summary<'arena, A>(
         context,
         artifacts,
         Body::Accessor(class_like.name, property_name, word(accessor)),
-        concat_word!(short_name(class_like.original_name), ".", property),
+        word(property),
         parameters,
         code,
     );

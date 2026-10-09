@@ -38,7 +38,6 @@ use mago_syntax::cst::UnaryPrefix;
 use mago_syntax::walker::Walker;
 use mago_word::Word;
 use mago_word::ascii_lowercase_word;
-use mago_word::concat_word;
 use mago_word::empty_word;
 use mago_word::word;
 
@@ -51,15 +50,15 @@ use crate::effects::Changed;
 use crate::effects::Effect;
 use crate::effects::EffectSummary;
 use crate::effects::Roots;
-use crate::effects::short_name;
 use crate::statement::function_like::FunctionLikeBody;
 
-/// Records the summary of `body`, whose parameters are declared at `parameters`, into `artifacts`.
+/// Records the summary of `body`, which messages name by `member`, and whose parameters are declared at `parameters`,
+/// into `artifacts`.
 pub(crate) fn record<'arena, A>(
     context: &Context<'_, 'arena, A>,
     artifacts: &mut AnalysisArtifacts,
     body: Body,
-    name: Word,
+    member: Word,
     parameters: Vec<Span>,
     code: FunctionLikeBody<'_, 'arena>,
 ) where
@@ -79,14 +78,14 @@ pub(crate) fn record<'arena, A>(
         subjects: Vec::new(),
         inlining: Vec::new(),
         grew: false,
-        summary: empty_summary(body, name),
+        summary: empty_summary(context, body, member),
     };
 
     // A local takes the roots of every value assigned to it anywhere in the body, so the walk repeats until no
     // local gains a root, and the last walk records with every local's roots known.
     loop {
         recorder.grew = false;
-        recorder.summary = empty_summary(body, name);
+        recorder.summary = empty_summary(context, body, member);
         match code {
             FunctionLikeBody::Statements(statements, _) => {
                 for statement in statements {
@@ -107,8 +106,18 @@ pub(crate) fn record<'arena, A>(
     artifacts.effect_summaries.push(summary);
 }
 
-fn empty_summary(body: Body, name: Word) -> EffectSummary {
-    EffectSummary { body, name, effects: Vec::new(), calls: Vec::new(), changes: Vec::new() }
+fn empty_summary<A>(context: &Context<'_, '_, A>, body: Body, member: Word) -> EffectSummary
+where
+    A: Arena,
+{
+    EffectSummary {
+        body,
+        member,
+        effects: Vec::new(),
+        calls: Vec::new(),
+        changes: Vec::new(),
+        imports: context.imported_names.clone(),
+    }
 }
 
 /// The state of one body's walk.
@@ -453,9 +462,8 @@ where
                         .codebase()
                         .get_function(function_name.as_bytes())
                         .map_or(function_name, |metadata| metadata.original_name);
-                    let cause = sharp_name(cause);
                     let declaration = self.extern_of(empty_word(), ascii_lowercase_word(function_name.as_bytes()));
-                    self.plain_php(declaration, span, cause);
+                    self.plain_php(declaration, span, (empty_word(), sharp_name(cause)));
                 }
                 CallTarget::FunctionLike {
                     callee: FunctionLikeIdentifier::Method(declaring_class, method_name),
@@ -505,8 +513,7 @@ where
         }
 
         let property = property.as_bytes().strip_prefix(b"$").unwrap_or(property.as_bytes());
-        let cause = concat_word!(short_name(class_like.original_name), ".", word(property));
-        self.summary.effects.push((Effect::Unknown(None), span, cause));
+        self.summary.effects.push((Effect::Unknown(None), span, (class_like.original_name, word(property))));
     }
 
     /// Records a PHP# operator on instances at `span`: it runs the static method its class declares, which takes
@@ -555,7 +562,7 @@ where
         }
 
         let class_name = codebase.get_class_like(class.as_bytes()).map_or(class, |metadata| metadata.original_name);
-        let cause = concat_word!(short_name(class_name), ".", metadata.original_name);
+        let cause = (class_name, metadata.original_name);
         if is_prelude_stub(declaring_class) || is_prelude_stub(class) {
             self.prelude_stub_call(class, metadata, span, receiver, arguments, cause);
         } else {
@@ -599,7 +606,7 @@ where
             self.summary.calls.push(Call { callee, span, receiver: Roots::new(), arguments });
         } else if !is_prelude_stub(class.name) {
             let declaration = self.extern_of(class.name, constructor);
-            self.plain_php(declaration, span, short_name(class.original_name));
+            self.plain_php(declaration, span, (class.original_name, empty_word()));
         }
     }
 
@@ -633,8 +640,9 @@ where
         None
     }
 
-    /// Records a call into plain PHP: the effects its declaration lists, or `Unknown` without one.
-    fn plain_php(&mut self, declaration: Option<&ExternMetadata>, span: Span, cause: Word) {
+    /// Records a call into plain PHP, of the callee `cause`: the effects its declaration lists, or `Unknown` without
+    /// one.
+    fn plain_php(&mut self, declaration: Option<&ExternMetadata>, span: Span, cause: (Word, Word)) {
         match declaration {
             Some(declaration) => {
                 for effect in &declaration.effects {
@@ -653,7 +661,7 @@ where
         span: Span,
         receiver: Option<&'ast Expression<'arena>>,
         arguments: &'ast ArgumentList<'arena>,
-        cause: Word,
+        cause: (Word, Word),
     ) {
         if class.as_bytes().eq_ignore_ascii_case(b"Sharp\\Environment") {
             self.summary.effects.push((Effect::Foreign(word(b"Sharp\\Environment")), span, cause));
