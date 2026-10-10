@@ -6170,6 +6170,23 @@ fn an_empty_list_literal_written_as_a_value_of_a_map_of_maps_is_an_error() {
     assert_eq!(issues(("src/Demo/Tally.php", php), &[]), Vec::<String>::new());
 }
 
+/// A value written two levels into a `Map` of `Map`s of `Map`s takes only a literal of the collection its value type
+/// declares there, so `deep["a"]["b"]` refuses `[]` and takes `[:]`, as `deep["a"]` does. PHP has one empty array.
+#[test]
+fn an_empty_list_literal_written_two_levels_into_a_map_of_maps_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Tally\n{\n    public int put()\n    {\n        Map<string, Map<string, Map<string, int>>> deep = [:];\n        deep[\"a\"][\"b\"] = [];\n        deep[\"a\"][\"b\"] = [:];\n        deep[\"a\"] = [:];\n        return count(deep);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tally\n{\n    public function put(): int\n    {\n        /** @var array<string, array<string, array<string, int>>> $deep */\n        $deep = [];\n        $deep['a']['b'] = [];\n        $deep['a'] = [];\n        return count($deep);\n    }\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tally.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["8:26 invalid-array-element `[]` is an empty List. An empty Map is written `[:]`."]
+    );
+    assert_eq!(issues(("src/Demo/Tally.php", php), &[]), Vec::<String>::new());
+}
+
 /// A value written into a `Map` takes only a literal of the collection its value type declares, so a `Map` of `List`s
 /// and a `Map` of `Set`s refuse `[:]`. PHP has one empty array, and its array of arrays takes `[]`.
 #[test]
