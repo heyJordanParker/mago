@@ -96,6 +96,7 @@ use mago_syntax::cst::Variable;
 use mago_syntax::cst::While;
 use mago_syntax::cst::WhileBody;
 use mago_syntax::cst::built_in_generic_arity;
+use mago_syntax::cst::erased_type;
 use mago_syntax::token::GetPrecedence;
 use mago_syntax::token::Precedence;
 use mago_syntax_core::stack::ensure_sufficient_stack;
@@ -954,7 +955,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         (Node::Block(_), Method | Body) => Some(Body),
         (Node::MethodExpressionBody(_), Method) => Some(Body),
         (Node::TryCatchClause(_), Body) => Some(TryCatchClause),
-        (Node::Hint(hint), TryCatchClause) if let Some(erased) = context.names.erased_type(hint) => {
+        (Node::Hint(hint), TryCatchClause) if let Some(erased) = untested_catch_type(hint, context) => {
             let test = format!("catch ({})", BytesDisplay(context.get_code_snippet(hint)));
             report_erased_test(&test, erased, context);
 
@@ -1128,7 +1129,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
                 None
             }
-            hint => match context.names.erased_type(hint) {
+            hint => match erased_type(hint) {
                 Some(erased) => {
                     let test = format!("as {}", BytesDisplay(context.get_code_snippet(hint)));
                     report_erased_test(&test, erased, context);
@@ -1157,7 +1158,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             None
         }
-        (Node::Hint(hint), Place::Pattern) if let Some(erased) = context.names.erased_type(hint) => {
+        (Node::Hint(hint), Place::Pattern) if let Some(erased) = erased_type(hint) => {
             let keyword = match context.ancestors.last() {
                 Some(Node::Expression(Expression::Is(_))) => "is ",
                 _ => "",
@@ -1167,6 +1168,8 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             None
         }
+        // A generic class's type arguments in a pattern are a parameter's types.
+        (Node::Hint(hint @ Hint::Generic(_)), Place::Pattern) if is_slice_type(hint) => Some(Parameter),
         (Node::Hint(hint), Place::Pattern) if is_slice_type(hint) && !matches!(hint, Hint::Void(_)) => {
             Some(Place::Pattern)
         }
@@ -1263,13 +1266,8 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             None
         }
         (Node::ConstantAccess(_), Body) => Some(Body),
-        (Node::TypeOf(type_of), Body | Constant) if context.names.is_type_parameter(&type_of.class) => {
-            let refused = format!("`{}` can't run yet", BytesDisplay(context.get_code_snippet(type_of)));
-            report_erased(type_of.span(), &refused, false, context);
-
-            None
-        }
-        // `typeof(X)` is `X::class`, which PHP takes as a constant expression too.
+        // `typeof(X)` of a class is `X::class`, which PHP takes as a constant expression too. Of a type parameter, it
+        // reads the type argument while the code runs.
         (Node::Expression(Expression::TypeOf(_)) | Node::TypeOf(_), Body | Constant) => Some(place),
         (Node::ConstantAccess(constant), Constant)
             if context.names.binding(&constant.name) == Some(Binding::Constant) =>
@@ -2554,7 +2552,20 @@ fn report_erased(span: Span, refused: &str, function_type: bool, context: &mut C
     );
 }
 
-/// Refuses the type test `test`, whose part `erased` needs what G1 erases, as [`ResolvedNames::erased_type`] finds it.
+/// The part of a catch clause's type that no catch tests yet: a type parameter or a type with type arguments, alone or
+/// in a union.
+fn untested_catch_type<'ast>(hint: &'ast Hint<'ast>, context: &Context<'_, '_, '_>) -> Option<&'ast Hint<'ast>> {
+    match hint {
+        Hint::Identifier(name) if context.names.is_type_parameter(name) => Some(hint),
+        Hint::Generic(_) => Some(hint),
+        Hint::Union(union) => {
+            untested_catch_type(union.left, context).or_else(|| untested_catch_type(union.right, context))
+        }
+        _ => erased_type(hint),
+    }
+}
+
+/// Refuses the type test `test`, whose part `erased` needs what G1 erases, as [`erased_type`] finds it.
 fn report_erased_test(test: &str, erased: &Hint, context: &mut Context<'_, '_, '_>) {
     report_erased(
         erased.span(),

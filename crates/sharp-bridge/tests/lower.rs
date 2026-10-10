@@ -3822,6 +3822,49 @@ fn a_generic_call_on_a_value_of_a_type_parameter_carries_its_type_arguments() {
     );
 }
 
+/// A test of a class with type arguments or of a type parameter, and `typeof` of a type parameter, read the type
+/// arguments while the code runs: a `SHARP_IS_TYPE` of the value and the type text, and a `SHARP_TYPE_OF` of the type
+/// text, written as `new` writes its type arguments. A test of a class without type arguments stays `INSTANCEOF`.
+#[test]
+fn a_test_and_typeof_of_a_type_with_type_arguments_read_them() {
+    let lowered = Lowered::with(
+        indoc! {"
+        namespace App;
+
+        public class Box<TValue>
+        {
+            public Box() { }
+
+            public bool holds(Any value) => value is TValue;
+        }
+
+        public class Shelf
+        {
+            public bool boxed(Any value) => value is Box<Order>;
+
+            public bool plain(Any value) => value is Order;
+
+            public bool kept<T>(Any value) => value is T;
+
+            public Class<T> kind<T>() => typeof(T);
+        }
+    "},
+        &[(
+            "src/App/Entities.php",
+            "<?php namespace App; abstract class DatabaseEntity {} final class Order extends DatabaseEntity {}",
+        )],
+    );
+    let test = |text: &str| {
+        format!("STMT_LIST\n  RETURN\n    SHARP_IS_TYPE\n      VAR\n        ZVAL \"value\"\n      ZVAL \"{text}\"\n")
+    };
+
+    assert_eq!(lowered.body_of("holds"), test("$0"));
+    assert_eq!(lowered.body_of("boxed"), test("App.Box<App.Order>"));
+    assert_eq!(lowered.body_of("kept"), test("#0"));
+    assert!(lowered.body_of("plain").contains("INSTANCEOF"), "{}", lowered.body_of("plain"));
+    assert_eq!(lowered.body_of("kind"), "STMT_LIST\n  RETURN\n    SHARP_TYPE_OF\n      ZVAL \"#0\"\n");
+}
+
 /// A list runs its methods in the engine's built-in `Sharp\Collection`, so a call of a generic one such as `map` carries
 /// no type arguments, as a call of any built-in method does.
 #[test]

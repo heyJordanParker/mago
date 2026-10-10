@@ -71,6 +71,7 @@ use crate::cst::TypePattern;
 use crate::cst::UnaryPrefix;
 use crate::cst::UnaryPrefixOperator;
 use crate::cst::Variable;
+use crate::cst::built_in_generic_arity;
 use crate::cst::sequence::Sequence;
 use crate::cst::sequence::TokenSeparatedSequence;
 
@@ -445,7 +446,8 @@ where
         })
     }
 
-    /// `instanceof` for a class, and the scalar test for a scalar type.
+    /// `instanceof` for a class or a type parameter, and the scalar test for a scalar type. A class with type arguments
+    /// is `instanceof` its name, spanning the whole type, where the analyzer records the type it tests.
     fn type_test(
         &self,
         hint: &'arena Hint<'arena>,
@@ -455,10 +457,14 @@ where
             return Some(self.call(function, operand));
         }
 
-        let Hint::Identifier(class) = hint else {
-            return None;
+        let class = match hint {
+            Hint::Identifier(class) => *class,
+            Hint::Generic(generic) if built_in_generic_arity(generic.name.value).is_none() => {
+                Identifier::Local(LocalIdentifier { span: hint.span(), value: generic.name.value })
+            }
+            _ => return None,
         };
-        let class = self.alloc(Expression::Identifier(*class));
+        let class = self.alloc(Expression::Identifier(class));
 
         Some(self.binary(
             operand,

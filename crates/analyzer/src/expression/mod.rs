@@ -38,6 +38,8 @@ use mago_syntax::cst::PropertiesPattern;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::TypePattern;
 use mago_syntax::cst::UnaryPrefixOperator;
+use mago_syntax::cst::built_in_generic_arity;
+use mago_syntax::cst::erased_type;
 use mago_syntax::utils::pattern::PhpShape;
 use mago_syntax::utils::pattern::called_function;
 use mago_syntax::walker::Walker;
@@ -361,6 +363,27 @@ where
         return Ok(());
     };
 
+    // A test of a type parameter or of a class with type arguments is `instanceof` the name, spanning the whole type,
+    // and narrows to the type written, which the analysis records as the type the test reads.
+    let tested = match node {
+        Node::Expression(Expression::Is(is)) => type_pattern_hints(is.pattern),
+        Node::Expression(Expression::As(r#as)) => vec![r#as.hint],
+        Node::Expression(Expression::PatternMatch(pattern_match))
+        | Node::Statement(Statement::PatternMatch(pattern_match)) => match_arm_hints(pattern_match),
+        _ => Vec::new(),
+    };
+    for hint in tested {
+        let reified = match hint {
+            Hint::Identifier(name) => context.resolved_names.is_type_parameter(name),
+            Hint::Generic(generic) => built_in_generic_arity(generic.name.value).is_none(),
+            _ => false,
+        };
+        if reified {
+            let tested_type = get_type_from_hint(context, block_context, artifacts, hint);
+            artifacts.record_tested_type(hint, tested_type);
+        }
+    }
+
     let patterns = context.patterns.len();
     match node {
         Node::Expression(Expression::Is(is)) => context.patterns.push((Some(is.is), is.pattern)),
@@ -670,9 +693,8 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Parenthesized<'arena> {
 }
 
 /// Whether an error already refuses `expression`. `check_slice` refuses it when it failed to parse, it is `!x is T`, it
-/// is `typeof` or
-/// `new` of a type parameter, it tests or converts a value to a type with an
-/// [erased part](mago_names::ResolvedNames::erased_type) in `is`, `as` or a `match` arm, or it reads or calls a member of
+/// is `new` of a type parameter, it tests or converts a value to a type with an
+/// [erased part](mago_syntax::cst::erased_type) in `is`, `as` or a `match` arm, or it reads or calls a member of
 /// a type parameter or of `typeof` of one through any chain of property reads. [`report_untested_generic_classes`]
 /// refuses a test of a generic PHP# class written without its type arguments. Its type is `never`, a variable its `is`
 /// pattern names holds the type written beside it, and it adds no other issue.
@@ -683,7 +705,6 @@ where
     let resolved_names = context.resolved_names;
     let mut object = match expression {
         Expression::Error(_) => return true,
-        Expression::TypeOf(type_of) => return resolved_names.is_type_parameter(&type_of.class),
         Expression::Instantiation(instantiation) => {
             return matches!(instantiation.class, Expression::Identifier(class) if resolved_names.is_type_parameter(class));
         }
@@ -773,17 +794,17 @@ pub(crate) fn report_untested_generic_class<A>(
     );
 }
 
-/// Whether no type test of `hint` can run yet: it has an [erased part](mago_names::ResolvedNames::erased_type), or it
+/// Whether no type test of `hint` can run yet: it has an [erased part](mago_syntax::cst::erased_type), or it
 /// names a generic class without its type arguments.
 fn is_untestable<A>(hint: &Hint<'_>, context: &Context<'_, '_, A>) -> bool
 where
     A: Arena,
 {
-    context.resolved_names.erased_type(hint).is_some() || untested_generic_class(hint, context).is_some()
+    erased_type(hint).is_some() || untested_generic_class(hint, context).is_some()
 }
 
 /// The name in a PHP# type test's `hint` of a generic PHP# class written without its type arguments, alone or inside a
-/// nullable type or a union, as [`mago_names::ResolvedNames::erased_type`] walks a type. A PHP class whose docblock
+/// nullable type or a union, as [`erased_type`] walks a type. A PHP class whose docblock
 /// declares templates, as `Traversable` does, is no generic class to PHP#, so a test of it runs. `None` in a PHP file.
 fn untested_generic_class<'ast, A>(
     hint: &'ast Hint<'ast>,

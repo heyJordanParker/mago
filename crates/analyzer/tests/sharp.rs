@@ -6417,9 +6417,10 @@ fn a_variance_breaking_private_member_is_reachable_only_through_this() {
     );
 }
 
-/// `is`, `as` and a `match` arm of a type with type arguments, which `check_slice` refuses because G1 erases type
-/// arguments, add no analyzer issue on the refused line: not the `is` test, the variable it declares nor its use. The
-/// plain PHP twin keeps Mago's issues.
+/// `is`, `as` and a `match` arm of a type with type arguments add no analyzer issue: of a `List`, which `check_slice`
+/// refuses because its type arguments don't reach the running program, not the `is` test, the variable it declares nor
+/// its use, and of a generic class, which the code tests with its type arguments, none either. The plain PHP twin keeps
+/// Mago's issues.
 #[test]
 fn a_type_test_with_type_arguments_adds_no_issue() {
     let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static int counted(Any? item) => item is List<int> numbers ? count(numbers) : 0;\n\n    public static Any? kept(Any? item) => item as List<int>;\n\n    public static int matched(Any? item) => match (item) { List<int> numbers => count(numbers), default => 0 };\n\n    public static Any? paged(Any? item) => item is PaginatedList<Order> page ? page.first() : null;\n\n    public static Any? cast(Any? item) => item as PaginatedList<Order>;\n\n    public static Any? pageMatched(Any? item) => match (item) { PaginatedList<Order> page => page.first(), default => null };\n}\n";
@@ -6427,6 +6428,89 @@ fn a_type_test_with_type_arguments_adds_no_issue() {
 
     assert_eq!(issues(("src/Demo/Report.php", php), &[("src/Demo/Paging.sharp", PAGING)]), Vec::<String>::new());
     assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]), Vec::<String>::new());
+}
+
+/// `is` and `as` of a generic class test its type arguments while the code runs, so the value they narrow has the
+/// class's type with its type arguments. The plain PHP twin tests the class alone, so it narrows to the class with its
+/// bounds.
+#[test]
+fn is_and_as_of_a_generic_class_narrow_to_its_type_arguments() {
+    let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static int tested(Any? item)\n    {\n        if (item is PaginatedList<Order>) {\n            return item;\n        }\n        return 0;\n    }\n\n    public static int named(Any? item)\n    {\n        if (item is PaginatedList<Order> page) {\n            return page;\n        }\n        return 0;\n    }\n\n    public static int cast(Any? item) => item as PaginatedList<Order>;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function tested(mixed $item): int\n    {\n        if ($item instanceof PaginatedList) {\n            return $item;\n        }\n        return 0;\n    }\n}\n";
+
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]),
+        [
+            "Invalid return type for method `Report.tested`: expected `int`, but found `PaginatedList<Order>`.",
+            "Invalid return type for method `Report.named`: expected `int`, but found `PaginatedList<Order>`.",
+            "Method `Report.cast` is declared to return `int` but possibly returns a nullable value (inferred as `PaginatedList<Order>?`).",
+            "Invalid return type for method `Report.cast`: expected `int`, but found `PaginatedList<Order>?`.",
+        ]
+    );
+    assert_eq!(
+        messages(("src/Demo/Report.php", php), &[("src/Demo/Paging.sharp", PAGING)]),
+        [
+            "Invalid return type for function `Demo\\Report::tested`: expected `int`, but found `Demo\\PaginatedList<Demo\\DatabaseEntity>`."
+        ]
+    );
+}
+
+/// Each `match` arm of a generic class tests its own type arguments, so an arm of `PaginatedList<SharedOrder>` after
+/// one of `PaginatedList<Order>` still matches, and each narrows its variable to its own type. The plain PHP twin tests
+/// the class alone, so its first arm takes every `PaginatedList` and its second narrows nothing.
+#[test]
+fn each_match_arm_of_a_generic_class_narrows_to_its_own_type_arguments() {
+    let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static int take(int count) => count;\n\n    public static int arms(Any? item) => match (item) {\n        PaginatedList<Order> orders => Report.take(orders),\n        PaginatedList<SharedOrder> shared => Report.take(shared),\n        default => 0,\n    };\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function take(int $count): int { return $count; }\n\n    public static function arms(mixed $item): int { return match (true) {\n        $item instanceof PaginatedList => self::take($item),\n        $item instanceof PaginatedList => self::take($item),\n        default => 0,\n    }; }\n}\n";
+
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]),
+        [
+            "Invalid argument type for argument #1 of `Report.take`: expected `int`, but found `PaginatedList<Order>`.",
+            "Invalid argument type for argument #1 of `Report.take`: expected `int`, but found `PaginatedList<SharedOrder>`.",
+        ]
+    );
+    assert_eq!(
+        messages(("src/Demo/Report.php", php), &[("src/Demo/Paging.sharp", PAGING)]),
+        [
+            "Invalid argument type for argument #1 of `Demo\\Report::take`: expected `int`, but found `Demo\\PaginatedList`.",
+            "Invalid argument type for argument #1 of `Demo\\Report::take`: expected `int`, but found `mixed`.",
+        ]
+    );
+}
+
+/// `value is TItem` tests the type argument `TItem` runs with, so it narrows the value to `TItem`. In the plain PHP
+/// twin `TItem` names a class, which does not exist.
+#[test]
+fn is_of_a_type_parameter_narrows_to_the_type_parameter() {
+    let sharp = "namespace Demo;\n\npublic class Inbox\n{\n    public static int held<TItem>(List<TItem> items, Any value)\n    {\n        if (value is TItem item) {\n            return item;\n        }\n        return 0;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Inbox\n{\n    /**\n     * @template TItem\n     * @param list<TItem> $items\n     */\n    public static function held(array $items, mixed $value): int\n    {\n        if (($item = $value) instanceof TItem) {\n            return $item;\n        }\n        return 0;\n    }\n}\n";
+
+    assert_eq!(
+        messages(("src/Demo/Inbox.sharp", sharp), &[]),
+        ["Invalid return type for method `Inbox.held`: expected `int`, but found `TItem`."]
+    );
+    assert_eq!(
+        codes(&issues(("src/Demo/Inbox.php", php), &[])),
+        ["mixed-assignment", "non-existent-class-like", "invalid-return-statement"]
+    );
+}
+
+/// `typeof(TItem)` is the class of the type argument `TItem` runs with, a `Class<TItem>`. In the plain PHP twin
+/// `TItem::class` names a class, which does not exist.
+#[test]
+fn typeof_of_a_type_parameter_is_the_class_of_the_type_parameter() {
+    let sharp = "namespace Demo;\n\npublic class Kinds\n{\n    public static int named<TItem : DatabaseEntity>(List<TItem> items) => typeof(TItem);\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Kinds\n{\n    /**\n     * @template TItem of DatabaseEntity\n     * @param list<TItem> $items\n     */\n    public static function named(array $items): int\n    {\n        return TItem::class;\n    }\n}\n";
+
+    assert_eq!(
+        messages(("src/Demo/Kinds.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]),
+        ["Invalid return type for method `Kinds.named`: expected `int`, but found `Class<TItem>`."]
+    );
+    assert_eq!(
+        codes(&issues(("src/Demo/Kinds.php", php), &[("src/Demo/Paging.sharp", PAGING)])),
+        ["non-existent-class-like", "invalid-return-statement"]
+    );
 }
 
 /// An override keeps the bounds of the type parameters it overrides, as C# keeps them, so one that changes a bound

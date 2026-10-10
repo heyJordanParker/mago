@@ -12,7 +12,6 @@ use mago_names::binding::Local;
 use mago_names::binding::LocalKind;
 use mago_names::binding::php_variable_name;
 use mago_names::resolver::NameResolver;
-use mago_span::HasSpan;
 use mago_span::Position;
 use mago_span::Span;
 use mago_syntax::cst::Node;
@@ -859,40 +858,6 @@ fn a_property_uses_field_when_a_body_names_it_outside_a_lambda() {
 fn php_variable_name_adds_a_dollar_only_to_a_bare_name() {
     assert_eq!(php_variable_name(b"total").as_bytes(), b"$total");
     assert_eq!(php_variable_name(b"$total").as_bytes(), b"$total");
-}
-
-/// The erased part of a type is what needs a type argument while the code runs: a type parameter, alone or inside a
-/// nullable type or a union, any type with type arguments, a `List` or a `Map` too, whatever its type arguments are,
-/// and a function type, which runs as a `Closure` of any signature. A class has none.
-#[test]
-fn the_erased_part_of_a_type_is_what_needs_a_type_argument_while_the_code_runs() {
-    const CODE: &str = "class Store<TItem>\n{\n    public void run(Any? value)\n    {\n        value as TItem;\n        value as TItem?;\n        value as (Order|TItem)?;\n        value as PaginatedList<Order>;\n        value as Class<Order>;\n        value as List<TItem>;\n        value as Map<string, List<TItem>>;\n        value as Order;\n        value as List<Order>;\n        value as List<PaginatedList<Order>>;\n        value as Function<int(int)>;\n    }\n}\n";
-    let arena = LocalArena::new();
-    let file = File::ephemeral(Cow::Borrowed(FILE_NAME), Cow::Borrowed(CODE.as_bytes()));
-    let program = parse_file(&arena, &file);
-    assert!(program.errors.is_empty(), "{:#?}", program.errors);
-    let names = NameResolver::new(&arena).resolve(program);
-    let erased = Node::Program(program).filter_map(|node| match node {
-        Node::As(r#as) => Some(names.erased_type(r#as.hint).map(|erased| &CODE[erased.span().to_range_usize()])),
-        _ => None,
-    });
-
-    assert_eq!(
-        erased,
-        [
-            Some("TItem"),
-            Some("TItem"),
-            Some("TItem"),
-            Some("PaginatedList<Order>"),
-            Some("Class<Order>"),
-            Some("List<TItem>"),
-            Some("Map<string, List<TItem>>"),
-            None,
-            Some("List<Order>"),
-            Some("List<PaginatedList<Order>>"),
-            Some("Function<int(int)>"),
-        ]
-    );
 }
 
 #[test]

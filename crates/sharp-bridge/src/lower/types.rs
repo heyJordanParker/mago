@@ -191,6 +191,15 @@ impl<'analysis> Types<'analysis> {
         Some(self.argument_texts(arguments))
     }
 
+    /// The type a PHP# `is`, `as`, `match` arm or `typeof` reads while the code runs, a type parameter or a class with
+    /// type arguments, as the analysis records it for the name the test or `typeof` writes, written as
+    /// [`Self::type_arguments`] writes a type. None for a class without type arguments.
+    pub(crate) fn tested_type(&self, name: &impl HasSpan) -> Option<String> {
+        let tested = self.artifacts.get_tested_type(name)?;
+
+        Some(text(tested, self.codebase, Parameter::Index))
+    }
+
     fn argument_texts(&self, arguments: &[TUnion]) -> String {
         arguments.iter().map(|argument| text(argument, self.codebase, Parameter::Index)).collect::<Vec<_>>().join(", ")
     }

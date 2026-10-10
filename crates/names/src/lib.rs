@@ -9,7 +9,6 @@ use mago_syntax::cst::ArrowFunction;
 use mago_syntax::cst::Closure;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Expression;
-use mago_syntax::cst::Hint;
 use mago_syntax::cst::MethodCall;
 use mago_syntax::cst::PropertyAccess;
 use mago_syntax::cst::PropertyHookBody;
@@ -235,25 +234,6 @@ impl<'arena> ResolvedNames<'arena> {
     pub fn has_storage(&self, accessors: &PropertyHookList<'_>) -> bool {
         accessors.hooks.iter().any(|accessor| matches!(accessor.body, PropertyHookBody::Abstract(_)))
             || self.uses_field(accessors)
-    }
-
-    /// Returns the part of a PHP# type that needs a type argument while the code runs, which G1 erases: a type
-    /// parameter, a type with type arguments, as in `List<int>`, `PaginatedList<Order>` or `Class<Order>`, or a
-    /// function type, which runs as a `Closure` of any signature. Returns `None` for a type that needs none, and for
-    /// every type in a PHP file.
-    ///
-    /// The checker refuses such a type in a pattern, `as` or a catch clause, and the analyzer reads this to skip what
-    /// the checker refused, so they never disagree on an erased type.
-    #[must_use]
-    pub fn erased_type<'ast>(&self, hint: &'ast Hint<'ast>) -> Option<&'ast Hint<'ast>> {
-        match hint {
-            Hint::Identifier(name) if self.is_type_parameter(name) => Some(hint),
-            Hint::Generic(_) | Hint::Function(_) => Some(hint),
-            Hint::Nullable(nullable) => self.erased_type(nullable.hint),
-            Hint::Parenthesized(parenthesized) => self.erased_type(parenthesized.hint),
-            Hint::Union(union) => self.erased_type(union.left).or_else(|| self.erased_type(union.right)),
-            _ => None,
-        }
     }
 
     fn class_object<'ast>(&self, object: &'ast Expression<'ast>) -> Option<&'ast ConstantAccess<'ast>> {

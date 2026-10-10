@@ -167,7 +167,9 @@ use crate::sharp_kind::SHARP_AST_PROP_GROUP;
 use crate::sharp_kind::SHARP_AST_PROPERTY_HOOK;
 use crate::sharp_kind::SHARP_AST_PROPERTY_HOOK_SHORT_BODY;
 use crate::sharp_kind::SHARP_AST_RETURN;
+use crate::sharp_kind::SHARP_AST_SHARP_IS_TYPE;
 use crate::sharp_kind::SHARP_AST_SHARP_TYPE_ARGS;
+use crate::sharp_kind::SHARP_AST_SHARP_TYPE_OF;
 use crate::sharp_kind::SHARP_AST_SILENCE;
 use crate::sharp_kind::SHARP_AST_STATIC_CALL;
 use crate::sharp_kind::SHARP_AST_STATIC_PROP;
@@ -1392,6 +1394,12 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 rhs: Expression::Identifier(class),
             }) => {
                 let value = self.expression(lhs);
+                // A test of a type parameter or of a class with type arguments reads them while the code runs.
+                if let Some(tested) = self.types.tested_type(class) {
+                    let tested = self.type_text(line, &tested);
+
+                    return self.node(SHARP_AST_SHARP_IS_TYPE, 0, line, &[value, tested]);
+                }
                 let class = self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class));
 
                 self.node(SHARP_AST_INSTANCEOF, 0, line, &[value, class])
@@ -1559,8 +1567,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 match self.types.type_arguments(name, instantiation.span()) {
                     Some(type_arguments) => {
-                        self.captures_type_arguments |= type_arguments.contains('#');
-                        let type_arguments = self.string(0, line, type_arguments.as_bytes());
+                        let type_arguments = self.type_text(line, &type_arguments);
 
                         self.node(SHARP_AST_SHARP_TYPE_ARGS, 0, line, &[new, type_arguments])
                     }
@@ -1648,6 +1655,12 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 } else {
                     self.node(SHARP_AST_NULLSAFE_PROP, 0, line, &[object, member])
                 }
+            }
+            // `typeof` of a type parameter reads its type argument while the code runs.
+            Expression::TypeOf(type_of) if let Some(tested) = self.types.tested_type(&type_of.class) => {
+                let tested = self.type_text(line, &tested);
+
+                self.node(SHARP_AST_SHARP_TYPE_OF, 0, line, &[tested])
             }
             Expression::TypeOf(type_of) => {
                 let class = self.string(ZEND_NAME_FQ, self.line(type_of.class), self.names.get(&type_of.class));
@@ -2456,8 +2469,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let mut arguments = self.argument_nodes(list, keys);
         let line = self.line(list);
         if let Some(type_arguments) = self.types.call_type_arguments(call) {
-            self.captures_type_arguments |= type_arguments.contains('#');
-            let text = self.string(0, line, type_arguments.as_bytes());
+            let text = self.type_text(line, &type_arguments);
             arguments.push(self.node(SHARP_AST_SHARP_TYPE_ARGS, 0, line, &[NULL, text]));
         }
 
@@ -2562,6 +2574,14 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         node.text = name;
 
         index
+    }
+
+    /// A type text the engine reads while the code runs. One that names a `#i` makes the lambda around it capture its
+    /// method's type arguments.
+    fn type_text(&mut self, line: u32, text: &str) -> u32 {
+        self.captures_type_arguments |= text.contains('#');
+
+        self.string(0, line, text.as_bytes())
     }
 
     fn string(&mut self, attr: u32, line: u32, text: &[u8]) -> u32 {

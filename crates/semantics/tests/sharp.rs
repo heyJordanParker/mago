@@ -3295,16 +3295,13 @@ fn a_header_names_a_class_or_a_generic_class_type_and_any_other_type_is_not_supp
 }
 
 /// Every example of spec sections 11 and 25 is in the slice: type parameters on a class, an interface and a method,
-/// bounds, variance, generic types, `Class<T>`, and type arguments on `new` and on a call. Section 11's `value is
-/// TItem` needs `TItem`'s type argument while the code runs, which G1 erases.
+/// bounds, variance, generic types, `Class<T>`, type arguments on `new` and on a call, and section 11's `value is
+/// TItem`, which reads `TItem`'s type argument while the code runs.
 #[test]
-fn the_generics_examples_of_the_spec_are_in_the_slice_but_a_test_of_a_type_parameter() {
+fn the_generics_examples_of_the_spec_are_in_the_slice() {
     let code = "namespace App.Tenant;\n\nimport Illuminate.Database.Eloquent.Model;\n\npublic class PaginatedList<TItem : DatabaseEntity>\n{\n    public TItem first(List<TItem> items) => items[0];\n}\n\npublic class Repository\n{\n    private Map<string, Class<Element>> elements = [:];\n\n    public PaginatedList<TItem> list<TItem : DatabaseEntity>(Query<TItem> query) => new PaginatedList<TItem>(query.rows());\n\n    public void share<TItem : DatabaseEntity & Shareable>(TItem item, Any body)\n    {\n        const page = new PaginatedList<Order>(this.rows());\n        const payload = Json.decode<WebhookPayload>(body);\n        const found = this?.find<Order>(1);\n    }\n\n    public Model? load(Class<Model> type, int id) => type.find(id);\n}\n\npublic interface Validator<in TItem>\n{\n    bool check(TItem item);\n}\n\npublic interface Source<out TItem>\n{\n    TItem next();\n}\n\npublic class OrderPage : PaginatedList<Order>\n{\n}\n\npublic class Inbox\n{\n    public bool holds<TItem>(List<TItem> items, Any value) => value is TItem;\n}\n";
 
-    assert_eq!(
-        issues(code),
-        ["42:72 `is TItem` can't be tested yet, because type arguments don't reach the running program."]
-    );
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 /// A type parameter's name is `T`, or `T` and an uppercase letter, as C# names them, spec section 11.
@@ -3421,11 +3418,11 @@ fn the_type_arguments_of_new_and_of_a_method_call_are_checked_as_types() {
     );
 }
 
-/// G1 erases type arguments, so a type parameter is not supported yet where the code runs it: in a pattern, `as` or a
-/// catch clause, `typeof` of one and `new` of one. Each refusal names the test or the expression as the code writes
-/// it, and why it cannot run, with no note. The plain PHP twin, whose `@template` names no class, has no PHP# rule.
+/// A pattern, `as` and `typeof` read a type parameter's type argument while the code runs. A catch clause of one and
+/// `new` of one are not supported yet. Each refusal names the test or the expression as the code writes it, and why it
+/// cannot run, with no note. The plain PHP twin, whose `@template` names no class, has no PHP# rule.
 #[test]
-fn what_needs_a_type_argument_while_the_code_runs_is_not_supported_yet() {
+fn a_catch_and_new_of_a_type_parameter_are_not_supported_yet() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    public bool run<TItem>(Any value, List<TItem> items)\n    {\n        const a = value is TItem;\n        const b = value is TItem item;\n        const c = value as TItem;\n        const i = match (value) { TItem => 1, default => 0 };\n        const j = typeof(TItem);\n        const k = new TItem(value);\n        try {\n        } catch (TItem failure) {\n        }\n        return a;\n    }\n}\n";
     let php = "<?php\n\nclass Report\n{\n    /**\n     * @template TItem\n     * @param list<TItem> $items\n     */\n    public function run(mixed $value, array $items): bool\n    {\n        $a = $value instanceof TItem;\n        $j = TItem::class;\n        $k = new TItem($value);\n        try {\n        } catch (TItem $failure) {\n        }\n        return $a;\n    }\n}\n";
     let because = "because type arguments don't reach the running program.";
@@ -3434,11 +3431,6 @@ fn what_needs_a_type_argument_while_the_code_runs_is_not_supported_yet() {
     assert_eq!(
         issues(code),
         [
-            format!("7:28 `is TItem` can't be tested yet, {because}"),
-            format!("8:28 `is TItem` can't be tested yet, {because}"),
-            format!("9:28 `as TItem` can't be tested yet, {because}"),
-            format!("10:35 `TItem` can't be tested yet, {because}"),
-            format!("11:19 `typeof(TItem)` can't run yet, {because}"),
             format!("12:19 `new TItem` can't run yet, {because}"),
             format!("14:18 `catch (TItem)` can't be tested yet, {because}"),
         ]
@@ -3529,11 +3521,11 @@ fn a_static_member_of_a_generic_class_cannot_return_self() {
     );
 }
 
-/// G1 erases type arguments, so `is`, `as` and a `match` arm cannot test them while the code runs: a `List` runs as a
-/// PHP array of any elements, and a generic class as its class. Each is refused once, at its type. The plain PHP twin
-/// has no PHP# rule.
+/// `is`, `as` and a `match` arm test a generic class's type arguments while the code runs, but not a `List`'s, which
+/// runs as a PHP array of any elements. Each test of one is refused once, at its type. The plain PHP twin has no PHP#
+/// rule.
 #[test]
-fn a_type_test_with_type_arguments_is_not_supported_yet() {
+fn a_type_test_of_a_list_with_type_arguments_is_not_supported_yet() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int run(Any? item)\n    {\n        const a = item is List<int> numbers ? count(numbers) : 0;\n        const b = item as List<int>;\n        const c = match (item) { List<int> numbers => count(numbers), default => 0 };\n        const d = item is PaginatedList<Order> page ? 1 : 0;\n        const e = item as PaginatedList<Order>;\n        const f = match (item) { PaginatedList<Order> page => 1, default => 0 };\n        return a;\n    }\n}\n";
     let php = "<?php\n\nclass Report\n{\n    public function run(mixed $item): int\n    {\n        $a = is_array($item) && array_is_list($item) ? count($item) : 0;\n        $b = $item instanceof PaginatedList ? 1 : 0;\n        return $a + $b;\n    }\n}\n";
     let because = "because type arguments don't reach the running program.";
@@ -3545,9 +3537,6 @@ fn a_type_test_with_type_arguments_is_not_supported_yet() {
             format!("7:27 `is List<int>` can't be tested yet, {because}"),
             format!("8:27 `as List<int>` can't be tested yet, {because}"),
             format!("9:34 `List<int>` can't be tested yet, {because}"),
-            format!("10:27 `is PaginatedList<Order>` can't be tested yet, {because}"),
-            format!("11:27 `as PaginatedList<Order>` can't be tested yet, {because}"),
-            format!("12:34 `PaginatedList<Order>` can't be tested yet, {because}"),
         ]
     );
 }
