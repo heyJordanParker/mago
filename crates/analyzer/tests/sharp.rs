@@ -3931,6 +3931,15 @@ fn an_expression_the_parser_refuses_reports_only_its_parse_error() {
             "9:21 invalid-local-assignment-value Invalid assignment to `wrong`: it is declared as `int`.",
         ]
     );
+
+    let unparsed = "<?php\n\nnamespace Demo;\n\nfunction run(): void\n{\n    printf(]);\n}\n";
+    assert_eq!(
+        reports(("src/Demo/run.php", unparsed)),
+        [
+            "7:12 parse Parse error encountered during parsing",
+            "7:12 no-value Argument #1 passed to function `printf` has type `never`, meaning it cannot produce a value.",
+        ]
+    );
 }
 
 #[test]

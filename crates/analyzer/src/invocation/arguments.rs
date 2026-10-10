@@ -185,8 +185,8 @@ pub fn verify_argument_type<'arena, A>(
 ) where
     A: Arena,
 {
-    // A refused argument is `never`, and its error already reports it.
-    if is_refused(context, input_expression) {
+    // A refused PHP# argument is `never`, and its error already reports it.
+    if context.dialect.is_sharp() && is_refused(context, input_expression) {
         return;
     }
 
