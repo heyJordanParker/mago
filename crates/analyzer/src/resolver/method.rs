@@ -226,7 +226,18 @@ where
     }
 
     if let Some(object_type) = artifacts.get_expression_type(object) {
-        let mut object_atomics = object_type.types.iter().collect::<Vec<_>>();
+        // A PHP# collection is called as every collection its place is declared as, whatever it holds, so a method
+        // resolves on each of them, and a collection that lacks it is reported once.
+        let declared = (context.dialect.is_sharp()
+            && object_type.types.iter().any(|atomic| matches!(atomic, TAtomic::Array(_))))
+        .then(|| get_declared_collection(context, block_context, artifacts, object))
+        .flatten();
+        let mut object_atomics = object_type
+            .types
+            .iter()
+            .filter(|atomic| declared.is_none() || !matches!(atomic, TAtomic::Array(_)))
+            .chain(declared.iter().flat_map(|declared| declared.types.iter()))
+            .collect::<Vec<_>>();
 
         while let Some(object_atomic) = object_atomics.pop() {
             if let TAtomic::GenericParameter(TGenericParameter { constraint, .. }) = object_atomic {
@@ -272,16 +283,13 @@ where
                     &closure_object
                 }
                 TAtomic::Array(array) if context.dialect.is_sharp() => {
-                    let declared = get_declared_collection(context, block_context, artifacts, object);
-                    let collection = match &declared {
-                        Some(declared) => declared,
-                        // An empty literal with no declared type is neither a List nor a Map, and the semantic checks
-                        // refuse its declaration.
-                        None if array.is_empty() => continue,
-                        None => array,
-                    };
+                    // An empty literal with no declared type is neither a List nor a Map, and the semantic checks
+                    // refuse its declaration.
+                    if array.is_empty() {
+                        continue;
+                    }
 
-                    collection_methods = get_collection_methods(collection, context.codebase);
+                    collection_methods = get_collection_methods(array, context.codebase);
                     &collection_methods
                 }
                 _ => {
@@ -1149,18 +1157,41 @@ where
     true
 }
 
-/// The collection type the place `object` is declared with: a typed local, a parameter, a property, or `field`, the
-/// storage of the property whose accessor is running. A PHP# collection is the `List` or `Map` its place declares, so
-/// its methods, its index reads and its `[k, v]` loops follow that type. A value the analyzer saw assigned last, such
-/// as a list of one implementation, or a `List` literal in a `Map<int, V>`, narrows neither its kind nor its elements.
-/// Only a property a PHP# class declares names a collection: a plain PHP `array` property, on a PHP class or reached
-/// through a PHP# one, is typed by the value it holds, as in PHP.
+/// The collection type the place `object` is declared with, as [`get_declared_type`] finds it: every `List`, `Map` and
+/// `Set` its type names, without the rest, such as `null`. A PHP# collection is the collection its place declares, so
+/// its methods, its index reads and its `[k, v]` loops follow that type, and a place declared as a union of
+/// collections allows only what each of them allows: the engine runs every collection as a PHP array, so nothing tells
+/// them apart when it runs. A value the analyzer saw assigned last, such as a list of one implementation, or a `List`
+/// literal in a `Map<int, V>`, narrows neither its kind nor its elements.
 pub(crate) fn get_declared_collection<'arena, A>(
     context: &Context<'_, 'arena, A>,
     block_context: &BlockContext<'_>,
     artifacts: &AnalysisArtifacts,
     object: &Expression<'arena>,
-) -> Option<TArray>
+) -> Option<TUnion>
+where
+    A: Arena,
+{
+    let collections: Vec<TAtomic> = get_declared_type(context, block_context, artifacts, object)?
+        .types
+        .iter()
+        .filter(|atomic| matches!(atomic, TAtomic::Array(_)))
+        .cloned()
+        .collect();
+
+    (!collections.is_empty()).then(|| TUnion::from_vec(collections))
+}
+
+/// The type the place `object` is declared with, whole: a typed local, a parameter, a property, or `field`, the
+/// storage of the property whose accessor is running. Only a property a PHP# class declares has a declared type here:
+/// a plain PHP `array` property, on a PHP class or reached through a PHP# one, is typed by the value it holds, as in
+/// PHP.
+pub(crate) fn get_declared_type<'arena, A>(
+    context: &Context<'_, 'arena, A>,
+    block_context: &BlockContext<'_>,
+    artifacts: &AnalysisArtifacts,
+    object: &Expression<'arena>,
+) -> Option<TUnion>
 where
     A: Arena,
 {
@@ -1171,11 +1202,11 @@ where
         object => object,
     };
 
-    let declared = match object {
+    match object {
         Expression::ConstantAccess(access) => {
             let variable_id = get_bare_name_variable_id(&access.name, context.resolved_names)?;
 
-            match block_context.local_types.get(&variable_id) {
+            Some(match block_context.local_types.get(&variable_id) {
                 Some((local_type, _)) => local_type.as_ref().clone(),
                 None => block_context
                     .scope
@@ -1186,7 +1217,7 @@ where
                     .get_type_metadata()?
                     .type_union
                     .clone(),
-            }
+            })
         }
         Expression::Access(Access::Property(access)) => {
             let ClassLikeMemberSelector::Identifier(property) = &access.property else {
@@ -1203,21 +1234,16 @@ where
             // `Class.name` is a static property of the class it names. Any other object is analyzed before its
             // property's collection is asked for, so its class is its expression type.
             if let Some(class) = context.resolved_names.static_property_class(access) {
-                property_type(context.resolved_names.get(&class.name))?.clone()
+                property_type(context.resolved_names.get(&class.name)).cloned()
             } else {
                 artifacts.get_expression_type(access.object)?.types.iter().find_map(|atomic| match atomic {
                     TAtomic::Object(object) => property_type(object.get_name()?.as_bytes()).cloned(),
                     _ => None,
-                })?
+                })
             }
         }
-        _ => return None,
-    };
-
-    declared.types.iter().find_map(|atomic| match atomic {
-        TAtomic::Array(array) => Some(array.clone()),
         _ => None,
-    })
+    }
 }
 
 /// The class whose methods a PHP# collection has, as spec section 12 writes them: a `List<T>` is called as
@@ -1318,8 +1344,8 @@ pub(crate) fn report_non_existent_method<A>(
     context.collector.report_with_code(IssueCode::NonExistentMethod, issue);
 }
 
-/// Reports a method a PHP# `List` or `Map` does not have, naming the collection type the code wrote and the methods
-/// `classname`, its `Sharp\ListMethods` or `Sharp\MapMethods`, gives it.
+/// Reports a method a PHP# `List`, `Map` or `Set` does not have, naming the collection type the code wrote and the
+/// methods `classname`, its `Sharp\ListMethods`, `Sharp\MapMethods` or `Sharp\SetMethods`, gives it.
 fn report_non_existent_collection_method<A>(
     context: &mut Context<'_, '_, A>,
     obj_span: Span,
