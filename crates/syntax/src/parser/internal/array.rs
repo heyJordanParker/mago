@@ -91,20 +91,21 @@ where
                     }),
                     Some(T!["=>"]) => {
                         let double_arrow = self.stream.consume_span()?;
-                        if !self.dialect.is_sharp() {
-                            return Ok(ArrayElement::KeyValue(KeyValueArrayElement {
-                                key: expr,
-                                double_arrow,
-                                value: self.parse_possibly_referenced_expression()?,
-                            }));
+                        let refused = self.dialect.is_sharp();
+                        if refused {
+                            self.errors.push(ParseError::PhpSyntaxInSharp(T!["=>"], double_arrow));
                         }
-
-                        self.errors.push(ParseError::PhpSyntaxInSharp(T!["=>"], double_arrow));
                         let value = self.parse_possibly_referenced_expression()?;
+                        let (key, value) = if refused {
+                            (
+                                &*self.arena.alloc(Expression::Error(expr.span())),
+                                &*self.arena.alloc(Expression::Error(value.span())),
+                            )
+                        } else {
+                            (*expr, value)
+                        };
 
-                        ArrayElement::Value(ValueArrayElement {
-                            value: self.arena.alloc(Expression::Error(expr.span().join(value.span()))),
-                        })
+                        ArrayElement::KeyValue(KeyValueArrayElement { key, double_arrow, value })
                     }
                     _ => ArrayElement::Value(ValueArrayElement { value: expr }),
                 }

@@ -199,7 +199,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                 Expression::Construct(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::Throw(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::Clone(expr) => expr.analyze(context, block_context, artifacts),
-                Expression::Error(_) | Expression::Is(_) if is_refused(self) => {
+                Expression::Error(_) | Expression::Is(_) if is_refused(context, self) => {
                     artifacts.set_expression_type(&self, get_never());
 
                     Ok(())
@@ -639,15 +639,18 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Parenthesized<'arena> {
     }
 }
 
-/// Whether an error already refuses `expression`: it failed to parse, or it is `!x is T`, which `check_slice` refuses.
-/// Its type is `never`, and it adds no issue.
-pub(crate) const fn is_refused(expression: &Expression<'_>) -> bool {
+/// Whether an error already refuses `expression`: it failed to parse, it is `!x is T`, which `check_slice` refuses,
+/// or it reads a local whose value is refused. Its type is `never`, and it adds no issue.
+pub(crate) fn is_refused<A>(context: &Context<'_, '_, A>, expression: &Expression<'_>) -> bool
+where
+    A: Arena,
+{
     match expression {
         Expression::Error(_) => true,
         Expression::Is(is) => {
             matches!(is.value, Expression::UnaryPrefix(prefix) if matches!(prefix.operator, UnaryPrefixOperator::Not(_)))
         }
-        _ => false,
+        _ => context.refused_reads.contains(&expression.span()),
     }
 }
 

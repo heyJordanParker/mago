@@ -55,6 +55,7 @@ use crate::expression::array::check_sharp_literal_kind;
 use crate::expression::array::get_set_literal_type;
 use crate::expression::constant_access::field_storage;
 use crate::expression::find_expression_logic_issues;
+use crate::expression::is_refused;
 use crate::formula::get_formula;
 use crate::resolver::method::get_declared_collection;
 use crate::resolver::static_property::StaticProperty;
@@ -736,7 +737,15 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
     // source can write. The user never wrote its assignment, so no issue judges it.
     let is_hidden = variable_id.as_bytes().contains(&b'#');
 
-    if !is_hidden && assigned_type.is_never() {
+    // A PHP# local that holds a refused value is refused as the value is, and its error already reports it.
+    let refused = context.dialect.is_sharp() && source_expression.is_some_and(|source| is_refused(context, source));
+    if refused {
+        block_context.refused_locals.insert(variable_id);
+    } else {
+        block_context.refused_locals.remove(&variable_id);
+    }
+
+    if !is_hidden && !refused && assigned_type.is_never() {
         let mut issue =
             Issue::error("Invalid assignment: the right-hand side has type `never` and cannot produce a value.")
                 .with_annotation(
