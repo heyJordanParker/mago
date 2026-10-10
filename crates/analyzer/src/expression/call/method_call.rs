@@ -28,6 +28,7 @@ use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::MethodCall;
 use mago_syntax::cst::NullSafeMethodCall;
+use mago_syntax::cst::PropertyAccess;
 use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::analyzable::Analyzable;
@@ -68,6 +69,7 @@ use crate::resolver::property::check_redundant_nullsafe;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::expression::is_this;
 use crate::utils::names::display_member;
+use crate::utils::names::sharp_collection_name;
 use crate::visibility::check_method_visibility;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for MethodCall<'arena> {
@@ -339,8 +341,11 @@ where
         );
         crate::utils::availability::check_method_availability(context, method_metadata, &method_display, span);
 
-        if (metadata.name.as_bytes().eq_ignore_ascii_case(b"Sharp\\ListMethods")
-            || metadata.name.as_bytes().eq_ignore_ascii_case(b"Sharp\\MapMethods"))
+        if context.dialect.is_sharp()
+            && matches!(
+                &resolved_method.static_class_type,
+                StaticClassType::Object(object) if sharp_collection_name(object).is_some()
+            )
             && !method_metadata.flags.is_mutation_free()
         {
             check_changed_collection(context, block_context, artifacts, object)?;
@@ -492,6 +497,21 @@ where
             block_context,
             artifacts,
             access,
+            false,
+            &changed_type,
+            None,
+            PropertyWriteKind::Mutation,
+        ),
+        Expression::Access(Access::NullSafeProperty(access)) => property_assignment::analyze(
+            context,
+            block_context,
+            artifacts,
+            &PropertyAccess {
+                object: access.object,
+                arrow: access.question_mark_arrow,
+                property: access.property.clone(),
+            },
+            true,
             &changed_type,
             None,
             PropertyWriteKind::Mutation,

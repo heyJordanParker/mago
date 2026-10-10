@@ -44,6 +44,7 @@ pub fn analyze<'ctx, 'arena, A>(
     block_context: &mut BlockContext<'ctx>,
     artifacts: &mut AnalysisArtifacts,
     property_access: &PropertyAccess<'arena>,
+    is_null_safe: bool,
     assigned_value_type: &TUnion,
     assigned_value: Option<&Expression<'arena>>,
     write_kind: PropertyWriteKind,
@@ -55,7 +56,7 @@ where
     let property_access_id = get_property_access_expression_id(
         property_access.object,
         &property_access.property,
-        false,
+        is_null_safe,
         block_context.scope.get_class_like_name(),
         context.resolved_names,
         Some(context.codebase),
@@ -70,8 +71,8 @@ where
         property_access.object,
         &property_access.property,
         property_access.arrow.span(),
-        false, // `null_safe`
-        true,  // `for_assignment`
+        is_null_safe,
+        true, // `for_assignment`
     )?;
     block_context.flags.set_inside_assignment(was_inside_assignment);
 

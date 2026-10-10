@@ -478,6 +478,7 @@ where
                     block_context,
                     artifacts,
                     property_access,
+                    false,
                     &source_type,
                     source_expression,
                     property_write_kind,
