@@ -5013,6 +5013,34 @@ fn a_place_declared_a_map_or_a_set_takes_a_list_literal() {
     assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
 }
 
+/// A local or a property declared a `Set` or a `Map` takes a literal of either, whichever it names first: `[]` and
+/// `[1]` are the `Set`, and `[:]` and `["a": 1]` the `Map`. PHP has one kind of array, and its array of either takes
+/// every literal.
+#[test]
+fn a_local_or_a_property_declared_a_set_or_a_map_takes_either_literal() {
+    let set_first = "namespace Demo;\n\nclass Tags\n{\n    private Set<int>|Map<string, int> kept = [1];\n\n    public int ids()\n    {\n        Set<int>|Map<string, int> tags = [\"a\": 1];\n        tags = [1];\n        tags = [\"a\": 1];\n        tags = [];\n        tags = [:];\n        this.kept = [1];\n        this.kept = [\"a\": 1];\n        this.kept = [];\n        this.kept = [:];\n        return count(tags) + count(this.kept);\n    }\n}\n";
+    let map_first = "namespace Demo;\n\nclass Tags\n{\n    private Map<string, int>|Set<int> kept = [\"a\": 1];\n\n    public int ids()\n    {\n        Map<string, int>|Set<int> tags = [1];\n        tags = [1];\n        tags = [\"a\": 1];\n        tags = [];\n        tags = [:];\n        this.kept = [1];\n        this.kept = [\"a\": 1];\n        this.kept = [];\n        this.kept = [:];\n        return count(tags) + count(this.kept);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /** @var array<string, int>|array<int, int> */\n    private array $kept = [1];\n\n    public function ids(): int\n    {\n        /** @var array<string, int>|array<int, int> $tags */\n        $tags = [1];\n        $tags = ['a' => 1];\n        $tags = [];\n        $this->kept = [1];\n        $this->kept = ['a' => 1];\n        $this->kept = [];\n        return count($tags) + count($this->kept);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", set_first), &[]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Tags.sharp", map_first), &[]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
+}
+
+/// A local whose first value may be a `Map` or a `Set` is either from then on, so it takes a literal of either. An
+/// emptied local holds the collection its literal names: `[]` is the `Set`, which a `Set` return takes, and
+/// `["a": 1]` is the `Map`, which a `Map` local takes. PHP has one kind of array.
+#[test]
+fn a_local_that_may_be_a_map_or_a_set_takes_either_literal_and_keeps_its_kind() {
+    let map_first = "namespace Demo;\n\nclass Tags\n{\n    public Set<int> pick(bool ready, Map<string, int> counts, Set<int> ids)\n    {\n        let tags = ready ? counts : ids;\n        tags = [\"a\": 1];\n        Map<string, int> named = tags;\n        tags = [1];\n        tags = [];\n        return count(named) > 0 ? tags : ids;\n    }\n}\n";
+    let set_first = "namespace Demo;\n\nclass Tags\n{\n    public Set<int> pick(bool ready, Map<string, int> counts, Set<int> ids)\n    {\n        let tags = ready ? ids : counts;\n        tags = [\"a\": 1];\n        Map<string, int> named = tags;\n        tags = [1];\n        tags = [];\n        return count(named) > 0 ? tags : ids;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /**\n     * @param array<string, int> $counts\n     * @param array<int, int> $ids\n     *\n     * @return array<int, int>\n     */\n    public function pick(bool $ready, array $counts, array $ids): array\n    {\n        $tags = $ready ? $counts : $ids;\n        $tags = ['a' => 1];\n        $tags = [1];\n        $tags = [];\n        return $tags;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", map_first), &[]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Tags.sharp", set_first), &[]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
+}
+
 /// PHP has one empty array, so a typed PHP place takes `[]` wherever a `list<string>` is declared.
 #[test]
 fn an_empty_php_array_where_a_list_is_declared_is_accepted() {
@@ -6273,6 +6301,79 @@ fn an_element_written_into_a_typed_local_or_parameter_must_fit_its_type() {
         ]
     );
     assert_eq!(issues(("src/Demo/Tally.php", php), &[]), Vec::<String>::new());
+}
+
+/// A value written into a `Map` takes only a literal of the collection its value type declares, so a `Map` of `Map`s
+/// refuses `[]` and takes `[:]` and `["x": 1]`, whether a parameter, a property or a local holds it. PHP has one empty
+/// array, and its array of arrays takes `[]`.
+#[test]
+fn an_empty_list_literal_written_as_a_value_of_a_map_of_maps_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Tally\n{\n    private Map<string, Map<string, int>> named = [:];\n\n    public int put(Map<string, Map<string, int>> counts)\n    {\n        counts[\"a\"] = [];\n        counts[\"a\"] = [:];\n        counts[\"a\"] = [\"x\": 1];\n        this.named[\"a\"] = [];\n        Map<string, Map<string, int>> local = [:];\n        local[\"a\"] = [];\n        return count(counts) + count(local);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tally\n{\n    /** @var array<string, array<string, int>> */\n    private array $named = [];\n\n    /** @param array<string, array<string, int>> $counts */\n    public function put(array $counts): int\n    {\n        $counts['a'] = [];\n        $counts['a'] = ['x' => 1];\n        $this->named['a'] = [];\n        $local = [];\n        $local['a'] = [];\n        return count($counts) + count($local);\n    }\n}\n";
+
+    let message = "invalid-array-element `[]` is an empty List. An empty Map is written `[:]`.";
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tally.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [format!("9:23 {message}"), format!("12:27 {message}"), format!("14:22 {message}")]
+    );
+    assert_eq!(issues(("src/Demo/Tally.php", php), &[]), Vec::<String>::new());
+}
+
+/// A value written two levels into a `Map` of `Map`s of `Map`s takes only a literal of the collection its value type
+/// declares there, so `deep["a"]["b"]` refuses `[]` and takes `[:]`, as `deep["a"]` does. PHP has one empty array.
+#[test]
+fn an_empty_list_literal_written_two_levels_into_a_map_of_maps_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Tally\n{\n    public int put()\n    {\n        Map<string, Map<string, Map<string, int>>> deep = [:];\n        deep[\"a\"][\"b\"] = [];\n        deep[\"a\"][\"b\"] = [:];\n        deep[\"a\"] = [:];\n        return count(deep);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tally\n{\n    public function put(): int\n    {\n        /** @var array<string, array<string, array<string, int>>> $deep */\n        $deep = [];\n        $deep['a']['b'] = [];\n        $deep['a'] = [];\n        return count($deep);\n    }\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tally.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["8:26 invalid-array-element `[]` is an empty List. An empty Map is written `[:]`."]
+    );
+    assert_eq!(issues(("src/Demo/Tally.php", php), &[]), Vec::<String>::new());
+}
+
+/// A value written into a `Map` takes only a literal of the collection its value type declares, so a `Map` of `List`s
+/// and a `Map` of `Set`s refuse `[:]`. PHP has one empty array, and its array of arrays takes `[]`.
+#[test]
+fn an_empty_map_literal_written_as_a_value_of_a_map_of_lists_or_of_sets_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Tally\n{\n    public int put(Map<string, List<int>> lists, Map<string, Set<int>> sets)\n    {\n        lists[\"a\"] = [:];\n        lists[\"a\"] = [];\n        lists[\"a\"] = [1];\n        sets[\"a\"] = [:];\n        return count(lists) + count(sets);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tally\n{\n    /**\n     * @param array<string, list<int>> $lists\n     * @param array<string, array<int, int>> $sets\n     */\n    public function put(array $lists, array $sets): int\n    {\n        $lists['a'] = [];\n        $lists['a'] = [1];\n        $sets['a'] = [];\n        return count($lists) + count($sets);\n    }\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tally.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [
+            "7:22 invalid-array-element `[:]` is an empty Map. An empty List is written `[]`.",
+            "10:21 invalid-array-element `[:]` is an empty Map. An empty Set is written `[]`.",
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Tally.php", php), &[]), Vec::<String>::new());
+}
+
+/// Pin: a `List` is never written by index, so `[:]` written by index into a `List` of `List`s is refused once, by
+/// that rule, and its literal adds no second issue. PHP writes an array by index.
+#[test]
+fn a_map_literal_written_by_index_into_a_list_of_lists_is_refused_once_by_the_list_write_rule() {
+    let sharp = "namespace Demo;\n\nclass Grid\n{\n    public int fill(List<List<int>> rows)\n    {\n        rows[0] = [:];\n        return count(rows);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Grid\n{\n    /** @param list<list<int>> $rows */\n    public function fill(array $rows): int\n    {\n        $rows[0] = [];\n        return count($rows);\n    }\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Grid.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["7:9 invalid-array-access A `List` is not written by index, because a write could leave a gap in its keys."]
+    );
+    assert_eq!(issues(("src/Demo/Grid.php", php), &[]), Vec::<String>::new());
 }
 
 /// Plain PHP receives a `Set` as the array it runs as, keyed by each element or its backing value, so a `Set` passes
