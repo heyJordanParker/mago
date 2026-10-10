@@ -93,6 +93,9 @@ pub struct AnalysisArtifacts {
     pub effect_summaries: Vec<EffectSummary>,
     /// What each PHP# call runs, keyed by the call's span.
     pub(crate) call_targets: HashMap<(u32, u32), Vec<CallTarget>>,
+    /// The PHP# function type each lambda or member read is written for, keyed by its span: the effects that type
+    /// lists, and the type as messages write it.
+    pub(crate) expected_function_types: HashMap<(u32, u32), (Vec<Word>, Word)>,
     pub(crate) variable_definedness: HashMap<(u32, u32), WordMap<VariableDefinedness>>,
     variable_definedness_targets: Option<Arc<[bool; NodeKind::COUNT]>>,
     pub(crate) pending_readonly_property_writes: Vec<PendingReadonlyPropertyWrite>,
@@ -131,6 +134,7 @@ impl AnalysisArtifacts {
             body_returns: HashMap::default(),
             effect_summaries: Vec::new(),
             call_targets: HashMap::default(),
+            expected_function_types: HashMap::default(),
             variable_definedness: HashMap::default(),
             variable_definedness_targets: None,
             pending_readonly_property_writes: Vec::new(),

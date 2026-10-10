@@ -54,6 +54,7 @@ use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax::cst::Access;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::FunctionLikeParameterList;
 use mago_syntax::cst::Statement;
@@ -247,6 +248,53 @@ pub fn expect_function_type<A>(
         && let Some(expected) = expected
     {
         artifacts.inferred_parameter_types = Some(closure_parameter_types(context, expected));
+    }
+
+    if let Some(expected) = expected {
+        expect_function_effects(context, artifacts, expression, expected);
+    }
+}
+
+/// Spec section 29: a lambda or a method value stored where a PHP# function type expects it may have only the effects
+/// that type lists. This records them, and the type as messages write it, for the effect summary of the body the value
+/// is written in, which judges the value once every body's effects are known. A member read that is no method value is
+/// held to the type as any value is.
+pub fn expect_function_effects<A>(
+    context: &Context<'_, '_, A>,
+    artifacts: &mut AnalysisArtifacts,
+    expression: &Expression<'_>,
+    expected: &TUnion,
+) where
+    A: Arena,
+{
+    let value = expression.unparenthesized();
+    if !context.dialect.is_sharp()
+        || !matches!(
+            value,
+            Expression::ArrowFunction(_) | Expression::Closure(_) | Expression::Access(Access::Property(_))
+        )
+    {
+        return;
+    }
+
+    let mut listed: Option<Vec<Word>> = None;
+    for effects in expected.types.iter().filter_map(|atomic| match atomic {
+        TAtomic::Callable(TCallable::Signature(signature)) => signature.effects.as_ref(),
+        _ => None,
+    }) {
+        let listed = listed.get_or_insert_with(Vec::new);
+        for effect in effects {
+            if !listed.contains(effect) {
+                listed.push(*effect);
+            }
+        }
+    }
+
+    if let Some(listed) = listed {
+        let span = value.span();
+        artifacts
+            .expected_function_types
+            .insert((span.start.offset, span.end.offset), (listed, word(display_sharp_type(context, expected))));
     }
 }
 
@@ -478,6 +526,7 @@ where
     parent_artifacts.variable_definedness.extend(std::mem::take(&mut artifacts.variable_definedness));
     parent_artifacts.resolved_method_calls.append(&mut artifacts.resolved_method_calls);
     parent_artifacts.call_targets.extend(std::mem::take(&mut artifacts.call_targets));
+    parent_artifacts.expected_function_types.extend(std::mem::take(&mut artifacts.expected_function_types));
     parent_artifacts.symbol_references.extend(std::mem::take(&mut artifacts.symbol_references));
     parent_artifacts.pending_readonly_property_writes.append(&mut artifacts.pending_readonly_property_writes);
 

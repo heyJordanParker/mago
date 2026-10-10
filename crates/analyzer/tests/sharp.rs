@@ -8820,3 +8820,113 @@ fn a_getter_applying_a_pure_operator_passes() {
 
     assert_eq!(effect_issues(&[cart, money]), Vec::<String>::new());
 }
+
+/// A cart, a charge, and a gateway whose `charge` [`GATEWAY_STUB`] declares with the effect `Http`.
+const SHOP: (&str, &str) = (
+    "src/Lib/Shop.php",
+    "<?php\n\nnamespace Lib;\n\nfinal class Cart\n{\n}\n\nfinal class Charge\n{\n}\n\nfinal class Gateway\n{\n    public function charge(Cart $cart): Charge\n    {\n        return new Charge();\n    }\n}\n",
+);
+
+const GATEWAY_STUB: (&str, &str) =
+    ("app/Stubs/Gateway.sharp", "namespace App.Stubs;\n\nimport Lib.Gateway;\n\nextern Gateway uses Http;\n");
+
+/// Spec section 29's function types with effects, a field of each approved form, compile as their PHP twins do.
+#[test]
+fn a_function_type_that_lists_its_effects_compiles_as_its_php_twin() {
+    let sharp = "namespace App.Shop;\n\nimport Lib.Cart;\nimport Lib.Charge;\n\npublic class Checkout\n{\n    Function<Charge(Cart) uses Http> charge;\n    Function<Charge(Cart) uses Http>? fallback;\n    Map<string, Function<Charge(Cart) uses Http, Mail>> handlers;\n    Function<int(Function<int(int) uses Http>)> apply;\n\n    public Checkout(Function<Charge(Cart) uses Http> charge, Map<string, Function<Charge(Cart) uses Http, Mail>> handlers, Function<int(Function<int(int) uses Http>)> apply)\n    {\n        this.charge = charge;\n        this.handlers = handlers;\n        this.apply = apply;\n    }\n\n    public Charge pay(Cart cart, Function<int(int) uses Http> step)\n    {\n        this.apply(step);\n        const fallback = this.fallback;\n        if (fallback != null) {\n            return fallback(cart);\n        }\n\n        return this.charge(cart);\n    }\n\n    public Map<string, Function<Charge(Cart) uses Http, Mail>> all() => this.handlers;\n}\n";
+    let php = "<?php\n\nnamespace App\\Shop;\n\nuse Lib\\Cart;\nuse Lib\\Charge;\n\nclass Checkout\n{\n    /** @var \\Closure(Cart): Charge */\n    private \\Closure $charge;\n    /** @var null|\\Closure(Cart): Charge */\n    private ?\\Closure $fallback = null;\n    /** @var array<string, \\Closure(Cart): Charge> */\n    private array $handlers;\n    /** @var \\Closure(\\Closure(int): int): int */\n    private \\Closure $apply;\n\n    /**\n     * @param \\Closure(Cart): Charge $charge\n     * @param array<string, \\Closure(Cart): Charge> $handlers\n     * @param \\Closure(\\Closure(int): int): int $apply\n     */\n    public function __construct(\\Closure $charge, array $handlers, \\Closure $apply)\n    {\n        $this->charge = $charge;\n        $this->handlers = $handlers;\n        $this->apply = $apply;\n    }\n\n    /** @param \\Closure(int): int $step */\n    public function pay(Cart $cart, \\Closure $step): Charge\n    {\n        ($this->apply)($step);\n        $fallback = $this->fallback;\n        if ($fallback !== null) {\n            return $fallback($cart);\n        }\n\n        return ($this->charge)($cart);\n    }\n\n    /** @return array<string, \\Closure(Cart): Charge> */\n    public function all(): array\n    {\n        return $this->handlers;\n    }\n}\n";
+
+    assert_eq!(issues(("app/Shop/Checkout.php", php), &[SHOP]), Vec::<String>::new());
+    assert_eq!(issues(("app/Shop/Checkout.sharp", sharp), &[SHOP]), Vec::<String>::new());
+}
+
+/// A function value fits a function type that lists every effect its own type lists, and a message writes each
+/// function type with its `uses`. The commas of a `uses` belong to the function type, so a `Map` of function types has
+/// two type arguments.
+#[test]
+fn a_function_value_whose_type_lists_an_effect_its_target_does_not_is_refused() {
+    let till = (
+        "app/Shop/Till.sharp",
+        "namespace App.Shop;\n\nimport Lib.Cart;\nimport Lib.Charge;\n\npublic class Till\n{\n    public Till(private Function<Charge(Cart) uses Http> charge) { }\n\n    public Function<Charge(Cart)> pure() => this.charge;\n\n    public Function<Charge(Cart) uses Http, Mail> wider() => this.charge;\n\n    public Map<string, Function<Charge(Cart)>> plain(Map<string, Function<Charge(Cart) uses Http, Mail>> handlers) => handlers;\n}\n",
+    );
+
+    assert_eq!(
+        messages(till, &[SHOP]),
+        [
+            "Invalid return type for method `Till.pure`: expected `Function<Charge(Cart)>`, but found `Function<Charge(Cart) uses Http>`.",
+            "Invalid return type for method `Till.plain`: expected `Map<string, Function<Charge(Cart)>>`, but found `Map<string, Function<Charge(Cart) uses Http, Mail>>`.",
+        ]
+    );
+}
+
+/// Spec section 29: a lambda stored where a function type expects it may have only the effects that type lists.
+#[test]
+fn a_lambda_with_an_effect_its_function_type_does_not_list_is_refused() {
+    let checkout = (
+        "app/Shop/Checkout.sharp",
+        "namespace App.Shop;\n\nimport Lib.Cart;\nimport Lib.Charge;\nimport Lib.Gateway;\n\npublic class Checkout\n{\n    public Checkout(private Gateway gateway) { }\n\n    public Function<Charge(Cart)> pure() => cart => this.gateway.charge(cart);\n\n    public Function<Charge(Cart) uses Http> listed() => cart => this.gateway.charge(cart);\n}\n",
+    );
+
+    assert_eq!(issues(checkout, &[SHOP, GATEWAY_STUB]), Vec::<String>::new());
+    assert_eq!(
+        effect_issues(&[checkout, SHOP, GATEWAY_STUB]),
+        [
+            "app/Shop/Checkout.sharp:11:53 unlisted-effect: Lambda calls `Gateway.charge`, which has the effect `Http`. Its type `Function<Charge(Cart)>` does not list `Http`."
+        ]
+    );
+}
+
+/// A method used as a value has the effects of its body, so it fits a function type as a lambda that calls it does.
+#[test]
+fn a_method_value_with_an_effect_its_function_type_does_not_list_is_refused() {
+    let register = (
+        "app/Shop/Register.sharp",
+        "namespace App.Shop;\n\nimport Lib.Cart;\nimport Lib.Charge;\nimport Lib.Gateway;\n\npublic class Register\n{\n    public Register(private Gateway gateway) { }\n\n    public Charge pay(Cart cart) => this.gateway.charge(cart);\n\n    public Function<Charge(Cart)> pure() => this.pay;\n\n    public Function<Charge(Cart) uses Http> listed() => this.pay;\n}\n",
+    );
+
+    assert_eq!(issues(register, &[SHOP, GATEWAY_STUB]), Vec::<String>::new());
+    assert_eq!(
+        effect_issues(&[register, SHOP, GATEWAY_STUB]),
+        [
+            "app/Shop/Register.sharp:13:45 unlisted-effect: Method value `this.pay` reaches `Register.pay`, which calls `Gateway.charge` with the effect `Http`. Its type `Function<Charge(Cart)>` does not list `Http`."
+        ]
+    );
+}
+
+/// A lambda that calls plain PHP no `extern` declares has an unknown effect, which no function type's `uses` accepts.
+#[test]
+fn a_lambda_with_an_unknown_effect_fits_no_function_type() {
+    let label = (
+        "app/Shop/Label.sharp",
+        "namespace App.Shop;\n\npublic class Label\n{\n    public Function<string(string) uses Http> loud() => text => strtoupper(text);\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[label]),
+        [
+            "app/Shop/Label.sharp:5:65 unlisted-effect: Lambda calls `strtoupper`, which has no `extern` declaration. No function type's `uses` accepts it. Help: Declare it in a .sharp file: `extern strtoupper;` when it has no effect, or name its effects after `uses`."
+        ]
+    );
+}
+
+/// Calling a function value has the effects its type lists, so a getter or a law that calls one is impure, and a
+/// lambda that calls one fits only a type that lists them. A collection method that takes it runs it, as `uses f`
+/// will declare.
+#[test]
+fn calling_a_function_value_has_the_effects_its_type_lists() {
+    let wallet = (
+        "app/Shop/Wallet.sharp",
+        "namespace App.Shop;\n\nimport Lib.Cart;\nimport Lib.Charge;\n\npublic class Wallet\n{\n    public Wallet(private Function<Charge(Cart) uses Http> charge, private Cart cart, private List<Cart> carts) { }\n\n    public Charge last => this.charge(this.cart);\n\n    public List<Charge> all => this.carts.map(this.charge);\n\n    public Function<Charge()> pure() => () => this.charge(this.cart);\n\n    public Function<Charge() uses Http> listed() => () => this.charge(this.cart);\n\n    law fresh(Function<bool() uses Http> check) => check();\n}\n",
+    );
+
+    assert_eq!(issues(wallet, &[SHOP]), Vec::<String>::new());
+    assert_eq!(
+        effect_issues(&[wallet, SHOP]),
+        [
+            "app/Shop/Wallet.sharp:10:27 impure-getter: Getter `last` calls `Wallet.charge`, which has the effect `Http`. Getters must be pure.",
+            "app/Shop/Wallet.sharp:12:32 impure-getter: Getter `all` calls `Wallet.charge`, which has the effect `Http`. Getters must be pure.",
+            "app/Shop/Wallet.sharp:18:52 impure-law: Law `fresh` calls `check`, which has the effect `Http`. Laws hold only over pure code.",
+            "app/Shop/Wallet.sharp:14:47 unlisted-effect: Lambda calls `Wallet.charge`, which has the effect `Http`. Its type `Function<Charge()>` does not list `Http`.",
+        ]
+    );
+}

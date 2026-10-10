@@ -80,10 +80,43 @@ pub(crate) fn laws_must_be_pure(
         .collect()
 }
 
-/// The error on the call or write `impurity` names in the `body` it refuses, a getter or a law, with the `extern` to
-/// write when the callee has none, or how to call a plain PHP property's code from outside `body`. `class_name` names
-/// each class in prose, `code_class_name` names it in the `extern`, and `missing_import` names the import the `extern`
-/// needs when the body's file doesn't bind its class.
+/// Spec section 29: a function value has only the effects its function type lists after `uses`, and an unknown effect
+/// fits no function type.
+pub(crate) fn function_values_fit_their_types(
+    effects: &Effects,
+    codebase: &CodebaseMetadata,
+    short_name_counts: &OnceCell<HashMap<String, u32>>,
+) -> IssueCollection {
+    effects
+        .unlisted_effects()
+        .map(|(value, imports, scope, (_, function_type), impurity)| {
+            let class_name = |class| sharp_class_like_name(codebase, imports, short_name_counts, class);
+            let code_class_name = |class| sharp_code_class_name(codebase, imports, scope, class);
+            let missing_import = |class| sharp_missing_imports(codebase, imports, scope, [class]);
+            let rule = match impurity.effect {
+                Some(Effect::Foreign(effect)) => {
+                    format!("Its type `{function_type}` does not list `{}`.", class_name(effect))
+                }
+                _ => "No function type's `uses` accepts it.".to_owned(),
+            };
+
+            impure(
+                IssueCode::UnlistedEffect,
+                format!("{value} {}. {rule}", impurity.describe(&class_name)),
+                "function value",
+                &impurity,
+                &class_name,
+                &code_class_name,
+                &missing_import,
+            )
+        })
+        .collect()
+}
+
+/// The error on the call or write `impurity` names in the `body` it refuses, a getter, a law or a function value, with
+/// the `extern` to write when the callee has none, or how to call a plain PHP property's code from outside `body`.
+/// `class_name` names each class in prose, `code_class_name` names it in the `extern`, and `missing_import` names the
+/// import the `extern` needs when the body's file doesn't bind its class.
 fn impure(
     code: IssueCode,
     message: String,

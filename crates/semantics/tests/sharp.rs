@@ -3562,6 +3562,13 @@ fn function_types_are_in_the_slice_as_field_parameter_local_and_return_types() {
 }
 
 #[test]
+fn a_function_type_that_lists_its_effects_is_in_the_slice() {
+    let code = "namespace App.Tenant;\n\nclass Checkout\n{\n    private Function<Charge(Cart) uses Http> charge;\n    private Function<Charge(Cart) uses Http>? fallback;\n    private Map<string, Function<Charge(Cart) uses Http, Mail>> handlers;\n    private Function<int(Function<int(int) uses Http>)> apply;\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
 fn a_void_parameter_of_a_function_type_is_not_supported_yet() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    private Function<int(void)> priceOf;\n}\n";
 

@@ -3394,6 +3394,20 @@ fn a_function_type_is_the_closure_class() {
     );
 }
 
+/// The checker holds a function value to the effects its type lists, and the engine runs it as the same `\Closure`, so a
+/// function type lowers the same whatever its `uses` lists.
+#[test]
+fn a_function_type_lowers_as_the_closure_class_whatever_effects_it_lists() {
+    let listed = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public Function<int(int) uses Http, Mail> apply(Function<int(int) uses Http, Mail> step, Function<void() uses Http>? other = null) { return step; }\n}\n",
+    );
+    let pure = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public Function<int(int)> apply(Function<int(int)> step, Function<void()>? other = null) { return step; }\n}\n",
+    );
+
+    assert_eq!(listed.tree(), pure.tree());
+}
+
 /// ```php
 /// $numbers = [1, $extra];
 /// $named = ['a' => 1, 2 => $numbers[0]];

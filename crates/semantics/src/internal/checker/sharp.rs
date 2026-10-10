@@ -712,6 +712,8 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         // `is_slice_type` refuses for its parameters, and `Self` in it is an error, because `Self` is a method's return
         // type only.
         (Node::FunctionHint(_), FieldOrProperty | Method | Parameter | Body) => Some(Parameter),
+        // The effects a function type lists after `uses`.
+        (Node::Uses(_), Parameter) => Some(Parameter),
         (Node::Method(method), Enum)
             if method.return_type_hint.is_none()
                 && enclosing_class(context.program, method.span())

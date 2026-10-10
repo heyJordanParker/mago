@@ -10,6 +10,8 @@ use mago_codex::metadata::r#extern::ExternMetadata;
 use mago_codex::metadata::function_like::FunctionLikeMetadata;
 use mago_codex::metadata::parameter::FunctionLikeParameterMetadata;
 use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::callable::TCallable;
+use mago_codex::ttype::union::TUnion;
 use mago_names::binding::Binding;
 use mago_names::binding::Local;
 use mago_names::binding::php_variable_name;
@@ -28,6 +30,7 @@ use mago_syntax::cst::Closure;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::ForOf;
+use mago_syntax::cst::FunctionLikeParameterList;
 use mago_syntax::cst::Instantiation;
 use mago_syntax::cst::Is;
 use mago_syntax::cst::LocalDeclaration;
@@ -56,7 +59,7 @@ use crate::statement::function_like::FunctionLikeBody;
 use crate::utils::names::is_prelude_stub;
 
 /// Records the summary of `body`, which messages name by `member`, and whose parameters are declared at `parameters`,
-/// into `artifacts`.
+/// into `artifacts`, with the summary of each function value it stores where a function type expects it.
 pub(crate) fn record<'arena, A>(
     context: &Context<'_, 'arena, A>,
     artifacts: &mut AnalysisArtifacts,
@@ -67,20 +70,26 @@ pub(crate) fn record<'arena, A>(
 ) where
     A: Arena,
 {
-    let class = match body {
-        Body::Method(class, _) | Body::Accessor(class, _, _) => class,
-    };
+    let summaries = summarize(context, artifacts, body, member, None, parameters, code);
+    artifacts.effect_summaries.extend(summaries);
+}
 
-    let imports = Arc::clone(&context.imported_names);
-    let scope = Arc::clone(&context.scope);
-    let empty_summary = || EffectSummary {
-        body,
-        member,
-        effects: Vec::new(),
-        calls: Vec::new(),
-        changes: Vec::new(),
-        imports: Arc::clone(&imports),
-        scope: Arc::clone(&scope),
+/// The summary of `body`, held to `function_type` when it is a function value, then the summaries of the function
+/// values it stores.
+fn summarize<'arena, A>(
+    context: &Context<'_, 'arena, A>,
+    artifacts: &AnalysisArtifacts,
+    body: Body,
+    member: Word,
+    function_type: Option<(Vec<Word>, Word)>,
+    parameters: Vec<Span>,
+    code: FunctionLikeBody<'_, 'arena>,
+) -> Vec<EffectSummary>
+where
+    A: Arena,
+{
+    let class = match body {
+        Body::Method(class, _) | Body::Accessor(class, _, _) | Body::FunctionValue(class, _) => class,
     };
 
     let mut recorder = Recorder {
@@ -93,14 +102,16 @@ pub(crate) fn record<'arena, A>(
         subjects: Vec::new(),
         inlining: Vec::new(),
         grew: false,
-        summary: empty_summary(),
+        summary: empty_summary(context, body, member, function_type.clone()),
+        stored: Vec::new(),
     };
 
     // A local takes the roots of every value assigned to it anywhere in the body, so the walk repeats until no
     // local gains a root, and the last walk records with every local's roots known.
     loop {
         recorder.grew = false;
-        recorder.summary = empty_summary();
+        recorder.summary = empty_summary(context, body, member, function_type.clone());
+        recorder.stored.clear();
         match code {
             FunctionLikeBody::Statements(statements, _) => {
                 for statement in statements {
@@ -117,8 +128,32 @@ pub(crate) fn record<'arena, A>(
         }
     }
 
-    let summary = recorder.summary;
-    artifacts.effect_summaries.push(summary);
+    let mut summaries = vec![recorder.summary];
+    summaries.append(&mut recorder.stored);
+
+    summaries
+}
+
+/// A summary of `body` that does nothing yet, naming classes as the analyzed file does.
+fn empty_summary<A>(
+    context: &Context<'_, '_, A>,
+    body: Body,
+    member: Word,
+    function_type: Option<(Vec<Word>, Word)>,
+) -> EffectSummary
+where
+    A: Arena,
+{
+    EffectSummary {
+        body,
+        member,
+        function_type,
+        effects: Vec::new(),
+        calls: Vec::new(),
+        changes: Vec::new(),
+        imports: Arc::clone(&context.imported_names),
+        scope: Arc::clone(&context.scope),
+    }
 }
 
 /// The state of one body's walk.
@@ -143,6 +178,8 @@ where
     /// Whether a local gained a root during this walk.
     grew: bool,
     summary: EffectSummary,
+    /// The summaries of the function values this walk found stored where a function type expects them.
+    stored: Vec<EffectSummary>,
 }
 
 impl<'ctx, 'ast, 'arena, A> Recorder<'_, 'ctx, 'ast, 'arena, A>
@@ -442,13 +479,18 @@ where
             CallExpression::StaticMethod(call) => (None, &call.argument_list, None),
         };
 
-        // A call of a lambda written in this body runs the lambda here. A call of any other function a local holds is
-        // pure, as a `Function` type is until the parser gives `Function<…>` its `uses`.
-        if let Some(lambda) = function.and_then(|function| self.lambda(function)) {
-            let roots: Vec<Roots> = arguments.arguments.iter().map(|argument| self.roots(argument.value())).collect();
-            self.inline(lambda, |index| roots.get(index).cloned().unwrap_or_default());
+        // A call of a lambda written in this body runs the lambda here. A call of any other function value has the
+        // effects its function type lists.
+        if let Some(function) = function {
+            if let Some(lambda) = self.lambda(function) {
+                let roots: Vec<Roots> =
+                    arguments.arguments.iter().map(|argument| self.roots(argument.value())).collect();
+                self.inline(lambda, |index| roots.get(index).cloned().unwrap_or_default());
 
-            return;
+                return;
+            }
+
+            self.call_function_value(function, span);
         }
 
         let artifacts = self.artifacts;
@@ -488,33 +530,73 @@ where
     }
 
     /// Records a call of the property `property` of `class` that holds a function. A PHP# class declares it with a
-    /// `Function` type, which is pure without `uses`. A plain PHP closure or callable is `Unknown`, because an `extern`
-    /// declares a class's members, not the code a property holds. An object's `__invoke` is recorded as the method it
-    /// is.
+    /// `Function` type, which has the effects it lists after `uses`. A plain PHP closure or callable is `Unknown`,
+    /// because an `extern` declares a class's members, not the code a property holds. An object's `__invoke` is
+    /// recorded as the method it is.
     fn property_call(&mut self, class: Word, property: Word, span: Span) {
         let codebase = self.codebase();
         let Some(class_like) = codebase.get_class_like(class.as_bytes()) else {
             return;
         };
+        let property_type = codebase
+            .get_property(class.as_bytes(), property.as_bytes())
+            .and_then(|metadata| metadata.type_metadata.as_ref())
+            .map(|metadata| &metadata.type_union);
+        let cause =
+            (class_like.original_name, word(property.as_bytes().strip_prefix(b"$").unwrap_or(property.as_bytes())));
         if class_like.flags.is_sharp() {
+            if let Some(property_type) = property_type {
+                self.function_type_effects(property_type, span, cause);
+            }
+
             return;
         }
 
-        let holds_object = codebase
-            .get_property(class.as_bytes(), property.as_bytes())
-            .and_then(|metadata| metadata.type_metadata.as_ref())
-            .is_some_and(|metadata| {
-                metadata.type_union.types.iter().all(|atomic| {
-                    matches!(atomic, TAtomic::Object(object)
-                        if object.get_name().is_some_and(|name| !name.as_bytes().eq_ignore_ascii_case(b"Closure")))
-                })
-            });
+        let holds_object = property_type.is_some_and(|property_type| {
+            property_type.types.iter().all(|atomic| {
+                matches!(atomic, TAtomic::Object(object)
+                    if object.get_name().is_some_and(|name| !name.as_bytes().eq_ignore_ascii_case(b"Closure")))
+            })
+        });
         if holds_object {
             return;
         }
 
-        let property = property.as_bytes().strip_prefix(b"$").unwrap_or(property.as_bytes());
-        self.summary.effects.push((Effect::Unknown(None), span, (class_like.original_name, word(property))));
+        self.summary.effects.push((Effect::Unknown(None), span, cause));
+    }
+
+    /// Records a call, at `span`, of the function value `value`: the effects its function type lists.
+    fn call_function_value(&mut self, value: &Expression<'arena>, span: Span) {
+        let artifacts = self.artifacts;
+        if let Some(value_type) = artifacts.get_expression_type(value) {
+            let cause = self.held_function(value);
+            self.function_type_effects(value_type, span, cause);
+        }
+    }
+
+    /// Records a call, at `span`, of a value of `value_type`: the effects each PHP# function type in it lists, with
+    /// `cause` naming the function called.
+    fn function_type_effects(&mut self, value_type: &TUnion, span: Span, cause: (Word, Word)) {
+        let effects = value_type.types.iter().filter_map(|atomic| match atomic {
+            TAtomic::Callable(TCallable::Signature(signature)) => signature.effects.as_ref(),
+            _ => None,
+        });
+        for effect in effects.flatten() {
+            self.summary.effects.push((Effect::Foreign(*effect), span, cause));
+        }
+    }
+
+    /// The function `value` holds as messages name it: a property by its class and name, and anything else as written.
+    fn held_function(&self, value: &Expression<'arena>) -> (Word, Word) {
+        if let Expression::Access(Access::Property(access)) = value.unparenthesized()
+            && let ClassLikeMemberSelector::Identifier(property) = &access.property
+            && let Some(class) = self.object_classes(access.object).first()
+            && let Some(metadata) = self.codebase().get_class_like(class.as_bytes())
+        {
+            return (metadata.original_name, word(property.value));
+        }
+
+        (empty_word(), self.text(value.span()))
     }
 
     /// Records a PHP# operator on instances at `span`: it runs the static method its class declares, which takes
@@ -677,6 +759,8 @@ where
             } else if let Expression::Access(Access::Property(method)) = value.unparenthesized() {
                 self.method_value(method, span, &elements);
             }
+
+            self.call_function_value(value, span);
         }
 
         if !metadata.flags.is_mutation_free()
@@ -686,7 +770,8 @@ where
         }
     }
 
-    /// A method value, such as `this.label`, passed to a call that runs it on `elements`.
+    /// A method value, such as `this.label`, run at `span` on `elements`: a PHP# method's body, or the effects a plain
+    /// PHP method's `extern` declares.
     fn method_value(&mut self, value: &PropertyAccess<'arena>, span: Span, elements: &Roots) {
         let ClassLikeMemberSelector::Identifier(name) = &value.property else {
             return;
@@ -707,12 +792,65 @@ where
                     Body::Method(ascii_lowercase_word(declaring_class.as_bytes()), ascii_lowercase_word(name.value));
                 let arguments = vec![elements.clone(); metadata.parameters.len()];
                 self.summary.calls.push(Call { callee, span, receiver: receiver.clone(), arguments });
+            } else if !is_prelude_stub(declaring_class) && !is_prelude_stub(class) {
+                let class_name =
+                    codebase.get_class_like(class.as_bytes()).map_or(class, |metadata| metadata.original_name);
+                let declaration = self.extern_of(class, ascii_lowercase_word(name.value));
+                self.plain_php(declaration, span, (class_name, metadata.original_name));
             }
+        }
+    }
+
+    /// The function type that expects the function value written at `span`, if one does.
+    fn expected_function_type(&self, span: Span) -> Option<(Vec<Word>, Word)> {
+        self.artifacts.expected_function_types.get(&(span.start.offset, span.end.offset)).cloned()
+    }
+
+    /// Records a lambda written at `span` where a function type expects it as its own body, held to that type.
+    fn store_lambda(
+        &mut self,
+        span: Span,
+        parameters: &FunctionLikeParameterList<'arena>,
+        code: FunctionLikeBody<'ast, 'arena>,
+    ) {
+        let Some(function_type) = self.expected_function_type(span) else {
+            return;
+        };
+
+        let parameters = parameters.parameters.iter().map(|parameter| parameter.variable.span).collect();
+        let body = Body::FunctionValue(self.class, span);
+        self.stored.extend(summarize(
+            self.context,
+            self.artifacts,
+            body,
+            word("Lambda"),
+            Some(function_type),
+            parameters,
+            code,
+        ));
+    }
+
+    /// Records a method value written where a function type expects it as a body that calls the method, held to that
+    /// type.
+    fn store_method_value(&mut self, value: &PropertyAccess<'arena>) {
+        let span = value.span();
+        let Some(function_type) = self.expected_function_type(span) else {
+            return;
+        };
+
+        let member = word(format!("Method value `{}`", self.text(span)));
+        let stored = empty_summary(self.context, Body::FunctionValue(self.class, span), member, Some(function_type));
+        let summary = std::mem::replace(&mut self.summary, stored);
+        self.method_value(value, span, &Roots::new());
+        let stored = std::mem::replace(&mut self.summary, summary);
+        if !stored.calls.is_empty() || !stored.effects.is_empty() {
+            self.stored.push(stored);
         }
     }
 }
 
-/// Walks one body, leaving out the lambdas and classes written in it: a lambda runs only where it is called.
+/// Walks one body, leaving out the lambdas and classes written in it: a lambda runs only where it is called, and one a
+/// function type expects is summarized as its own body.
 struct SummaryWalker;
 
 impl SummaryWalker {
@@ -741,9 +879,19 @@ impl<'ast, 'arena, A> Walker<'ast, 'arena, Recorder<'_, '_, 'ast, 'arena, A>> fo
 where
     A: Arena,
 {
-    fn walk_closure(&self, _: &'ast Closure<'arena>, _: &mut Recorder<'_, '_, 'ast, 'arena, A>) {}
+    fn walk_closure(&self, closure: &'ast Closure<'arena>, recorder: &mut Recorder<'_, '_, 'ast, 'arena, A>) {
+        let body = FunctionLikeBody::Statements(closure.body.statements.as_slice(), closure.body.span());
+        recorder.store_lambda(closure.span(), &closure.parameter_list, body);
+    }
 
-    fn walk_arrow_function(&self, _: &'ast ArrowFunction<'arena>, _: &mut Recorder<'_, '_, 'ast, 'arena, A>) {}
+    fn walk_arrow_function(
+        &self,
+        arrow_function: &'ast ArrowFunction<'arena>,
+        recorder: &mut Recorder<'_, '_, 'ast, 'arena, A>,
+    ) {
+        let body = FunctionLikeBody::Expression(arrow_function.expression);
+        recorder.store_lambda(arrow_function.span(), &arrow_function.parameter_list, body);
+    }
 
     fn walk_anonymous_class(&self, _: &'ast AnonymousClass<'arena>, _: &mut Recorder<'_, '_, 'ast, 'arena, A>) {}
 
@@ -822,6 +970,7 @@ where
     ) {
         if recorder.context.resolved_names.static_property_class(access).is_none() {
             recorder.read_property(access.object, &access.property, access.span());
+            recorder.store_method_value(access);
         }
     }
 

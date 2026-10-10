@@ -629,6 +629,93 @@ fn a_function_type_with_one_built_in_parameter_type_reads_the_cast_as_its_parent
     assert_eq!(types, [("int", vec!["int"], "(", ")"), ("bool", vec!["string"], "(", ")")]);
 }
 
+/// The effects a function type lists after `uses`, as written.
+fn function_effects<'a>(code: &'a str, hint: &Hint) -> Vec<&'a str> {
+    let Hint::Function(function) = hint else {
+        panic!("expected a function type, got {hint:#?}");
+    };
+
+    function.uses.iter().flat_map(|uses| uses.names.iter()).map(|name| source(code, name)).collect()
+}
+
+/// Spec section 29: a function type's `uses` and its effects sit inside its brackets, after its parameter list, so the
+/// commas between effects never separate the type arguments of a collection around it.
+#[test]
+fn a_function_type_lists_its_effects_after_its_parameters_inside_its_brackets() {
+    const CODE: &str = "class Checkout\n{\n    Function<Charge(Cart) uses Http> charge;\n    Function<Charge(Cart) uses Http>? fallback;\n    Map<string, Function<Charge(Cart) uses Http, Mail>> handlers;\n    Function<int(Function<int(int) uses Http>)> apply;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Checkout.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let hints: Vec<&Hint> = class_members(program)
+        .iter()
+        .map(|member| {
+            let ClassLikeMember::Property(Property::Plain(field)) = member else {
+                panic!("expected a field, got {member:#?}");
+            };
+
+            field.hint.as_ref().expect("a type")
+        })
+        .collect();
+    let [charge, Hint::Nullable(fallback), handlers, apply] = hints.as_slice() else {
+        panic!("expected four fields, the second nullable, got {hints:#?}");
+    };
+
+    assert_eq!(source(CODE, *charge), "Function<Charge(Cart) uses Http>");
+    assert_eq!(function_type(CODE, charge), ("Charge", vec!["Cart"]));
+    assert_eq!(function_effects(CODE, charge), ["Http"]);
+    assert_eq!(function_effects(CODE, fallback.hint), ["Http"]);
+    assert_eq!(generic_type(CODE, handlers), ("Map", vec!["string", "Function<Charge(Cart) uses Http, Mail>"]));
+    let Hint::Generic(handlers) = handlers else {
+        panic!("expected a generic type, got {handlers:#?}");
+    };
+    assert_eq!(function_effects(CODE, &handlers.arguments.as_slice()[1]), ["Http", "Mail"]);
+    assert_eq!(function_type(CODE, apply), ("int", vec!["Function<int(int) uses Http>"]));
+    assert_eq!(function_effects(CODE, apply), Vec::<&str>::new());
+    let Hint::Function(apply) = apply else {
+        panic!("expected a function type, got {apply:#?}");
+    };
+    assert_eq!(function_effects(CODE, &apply.parameters.as_slice()[0]), ["Http"]);
+}
+
+/// `uses` after a function type's closing `>`, as Java writes `throws` after a signature, is a parse error that shows
+/// the type with `uses` inside its brackets.
+#[test]
+fn uses_after_a_function_type_is_a_parse_error_that_shows_it_inside_the_brackets() {
+    const CODE: &str = "class Checkout\n{\n    Function<Charge(Cart)> uses Http charge;\n    Function<Charge(Cart)>? uses Http, Mail fallback;\n\n    public int run() { return 1; }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Checkout.sharp", CODE);
+
+    let errors: Vec<(String, &str)> =
+        program.errors.iter().map(|error| (error.to_string(), source(CODE, error))).collect();
+    assert_eq!(
+        errors,
+        [
+            (
+                "A function type's `uses` goes inside its brackets, after its parameters: `Function<Charge(Cart) uses Http>`."
+                    .to_owned(),
+                "uses Http"
+            ),
+            (
+                "A function type's `uses` goes inside its brackets, after its parameters: `Function<Charge(Cart) uses Http, Mail>?`."
+                    .to_owned(),
+                "uses Http, Mail"
+            ),
+        ]
+    );
+    let names: Vec<&str> = class_members(program)
+        .iter()
+        .map(|member| match member {
+            ClassLikeMember::Property(Property::Plain(field)) => {
+                source(CODE, field.items.first().expect("one field").variable())
+            }
+            ClassLikeMember::Method(method) => source(CODE, &method.name),
+            member => panic!("expected two fields and a method, got {member:#?}"),
+        })
+        .collect();
+    assert_eq!(names, ["charge", "fallback", "run"]);
+}
+
 /// A `.sharp` file has no `<?php` or `?>`, so a nullable last type argument ends the type, as in `Map<string, Any?>`.
 #[test]
 fn a_nullable_type_argument_ends_a_collection_type() {

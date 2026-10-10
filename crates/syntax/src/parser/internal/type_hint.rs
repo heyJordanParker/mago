@@ -1,4 +1,5 @@
 use mago_database::file::HasFileId;
+use mago_span::HasSpan;
 use mago_span::Span;
 
 use crate::T;
@@ -143,6 +144,14 @@ where
             hint
         };
 
+        match &hint {
+            Hint::Function(function) => self.refuse_uses_after_function_type(function, false)?,
+            Hint::Nullable(NullableHint { hint: Hint::Function(function), .. }) => {
+                self.refuse_uses_after_function_type(function, true)?;
+            }
+            _ => {}
+        }
+
         let next = self.stream.lookahead(0)?;
         Ok(match next.map(|t| t.kind) {
             Some(T!["|"]) => {
@@ -278,8 +287,39 @@ where
             left_parenthesis,
             parameters: TokenSeparatedSequence::new(parameters, commas),
             right_parenthesis,
+            uses: self.parse_optional_uses()?,
             greater_than: self.parse_closing_angle()?,
         })
+    }
+
+    /// Refuses `uses` and an effect written after a function type's closing `>`, as Java writes `throws` after a
+    /// signature, with the type written with its `uses` inside the brackets. The effect after `uses` tells the clause
+    /// from a local or a field named `uses`.
+    fn refuse_uses_after_function_type(
+        &mut self,
+        function: &FunctionHint<'_>,
+        nullable: bool,
+    ) -> Result<(), ParseError> {
+        let is_at_uses =
+            self.stream.lookahead(0)?.is_some_and(|token| token.kind == T![Identifier] && token.value == b"uses");
+        if function.uses.is_some() || !is_at_uses || self.stream.peek_kind(1)? != Some(T![Identifier]) {
+            return Ok(());
+        }
+
+        let Some(uses) = self.parse_optional_uses()? else {
+            return Ok(());
+        };
+        let text =
+            |span: Span| String::from_utf8_lossy(&self.source[span.start.offset as usize..span.end.offset as usize]);
+        let written = format!(
+            "{} {}>{}",
+            text(function.function.span.join(function.right_parenthesis)),
+            text(uses.span()),
+            if nullable { "?" } else { "" }
+        );
+        self.errors.push(ParseError::UsesAfterFunctionTypeInSharp(written.into_boxed_str(), uses.span()));
+
+        Ok(())
     }
 
     /// Consumes the `>` that closes a type argument list. A `>>` closes this list and the enclosing one.

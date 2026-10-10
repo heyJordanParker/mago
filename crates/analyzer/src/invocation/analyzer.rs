@@ -64,6 +64,7 @@ use crate::invocation::template_inference::infer_parameter_templates_from_defaul
 use crate::invocation::template_result::get_class_template_parameters_from_result;
 use crate::invocation::template_result::populate_template_result_from_invocation;
 use crate::invocation::template_result::refine_template_result_for_function_like;
+use crate::statement::function_like::expect_function_effects;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::names::display_variable_name;
 use crate::utils::names::is_prelude_stub;
@@ -655,7 +656,7 @@ where
                 // whatever class the call goes through, of a function value whose signature PHP# wrote, or of a
                 // `Sharp\` collection method, which PHP# declares as a plain PHP stub only to carry its templates. A
                 // plain PHP method's or closure's parameter takes either literal, whatever its docblock says.
-                if matches!(&invocation.target, InvocationTarget::Callable { signature, .. } if signature.is_sharp)
+                if matches!(&invocation.target, InvocationTarget::Callable { signature, .. } if signature.effects.is_some())
                     || invocation.target.get_function_like_metadata().is_some_and(|function| function.flags.is_sharp())
                     || matches!(
                         invocation.target.get_function_like_identifier(),
@@ -665,6 +666,7 @@ where
                     check_sharp_literal_kind(context, argument_expression, &final_parameter_type);
                 }
 
+                expect_function_effects(context, artifacts, argument_expression, &final_parameter_type);
                 verify_argument_type(
                     context,
                     &argument_value_type,

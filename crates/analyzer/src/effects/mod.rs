@@ -52,12 +52,16 @@ pub(crate) enum Changed {
 /// The roots of a value. A value with no root is fresh: the body made it, so changing it changes nothing given.
 pub(crate) type Roots = BTreeSet<Changed>;
 
-/// A PHP# body: a method by its lowercase class and method names, or an accessor by its lowercase class, its
-/// property's PHP name (`$total`) and `get` or `set`.
+/// A PHP# body.
+///
+/// A method is keyed by its lowercase class and method names, and an accessor by its lowercase class, its property's
+/// PHP name (`$total`) and `get` or `set`. A lambda or a method value written where a function type expects it is keyed
+/// by the lowercase class it is written in and where it is written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum Body {
     Method(Word, Word),
     Accessor(Word, Word, Word),
+    FunctionValue(Word, Span),
 }
 
 /// A call from one PHP# body to another, with the roots of what it passes.
@@ -71,12 +75,17 @@ pub(crate) struct Call {
 }
 
 /// What one PHP# body does by itself: the effects of the plain PHP it calls, the PHP# bodies it calls, and the state
-/// it changes. A lambda is part of the body that calls it.
+/// it changes.
+///
+/// A lambda is part of the body that calls it, and is its own body too when a function type expects it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EffectSummary {
     pub(crate) body: Body,
-    /// The body's member as messages name it: `price`, `total` for an accessor of `total`, or `operator +`.
+    /// The body's member as messages name it: `price`, `total` for an accessor of `total`, or `operator +`, and a
+    /// function value as `Lambda` or ``Method value `this.pay` ``.
     pub(crate) member: Word,
+    /// For a function value, the effects of the function type that expects it, and that type as messages write it.
+    pub(crate) function_type: Option<(Vec<Word>, Word)>,
     /// Each effect, with the call that has it and that call's callee as its full class name and its member, with an
     /// empty class for a function and an empty member for a constructor.
     pub(crate) effects: Vec<(Effect, Span, (Word, Word))>,
@@ -163,6 +172,8 @@ pub struct Effects {
     /// The imports and the scope of each body's file, which name the classes of a message about the body.
     imports: Vec<Arc<WordMap<Word>>>,
     scopes: Vec<Arc<NamespaceScope>>,
+    /// The function type each function value is held to, as its summary records it.
+    function_types: Vec<Option<(Vec<Word>, Word)>>,
     index: HashMap<Body, usize>,
     /// Each body's items, its own in source order first, and each once.
     solved: Vec<Vec<(Item, Origin)>>,
@@ -254,11 +265,14 @@ impl Effects {
             names: summaries
                 .iter()
                 .map(|summary| match summary.body {
-                    Body::Method(class, _) | Body::Accessor(class, _, _) => (class, summary.member),
+                    Body::Method(class, _) | Body::Accessor(class, _, _) | Body::FunctionValue(class, _) => {
+                        (class, summary.member)
+                    }
                 })
                 .collect(),
             imports: summaries.iter().map(|summary| Arc::clone(&summary.imports)).collect(),
             scopes: summaries.iter().map(|summary| Arc::clone(&summary.scope)).collect(),
+            function_types: summaries.iter().map(|summary| summary.function_type.clone()).collect(),
             index,
             solved,
         }
@@ -292,16 +306,23 @@ impl Effects {
         let short_name_counts = OnceCell::new();
         let mut issues = check::getters_must_be_pure(self, codebase, &short_name_counts);
         issues.extend(check::laws_must_be_pure(self, codebase, &short_name_counts));
+        issues.extend(check::function_values_fit_their_types(self, codebase, &short_name_counts));
 
         issues
     }
 
     fn body_impurity(&self, body: Body) -> Option<Impurity> {
-        let position = *self.index.get(&body)?;
         let constructor = matches!(body, Body::Method(_, method) if method.as_bytes() == b"__construct");
+
+        self.first_item(body, |item| !(constructor && item == Item::Changed(Changed::This)))
+    }
+
+    /// Why `body` has an item `counts` keeps, as the first call or write in it that leads there.
+    fn first_item(&self, body: Body, counts: impl Fn(Item) -> bool) -> Option<Impurity> {
+        let position = *self.index.get(&body)?;
         let &(mut item, mut origin) = self.solved[position]
             .iter()
-            .filter(|(item, _)| !(constructor && *item == Item::Changed(Changed::This)))
+            .filter(|(item, _)| counts(*item))
             .min_by_key(|(_, origin)| origin.span.start.offset)?;
 
         let span = origin.span;
@@ -330,6 +351,32 @@ impl Effects {
                 self.body_impurity(*body).map(|impurity| {
                     (*body, self.names[position].1, &*self.imports[position], &*self.scopes[position], impurity)
                 })
+            },
+        )
+    }
+
+    /// Each function value with an effect its function type does not list, as messages name it, with the imports and
+    /// the scope of its file, that function type, and the first call that has such an effect. An unknown effect fits
+    /// no function type.
+    fn unlisted_effects(
+        &self,
+    ) -> impl Iterator<Item = (Word, &WordMap<Word>, &NamespaceScope, &(Vec<Word>, Word), Impurity)> + '_ {
+        self.bodies.iter().enumerate().filter(|(position, body)| self.index.get(body) == Some(position)).filter_map(
+            |(position, body)| {
+                let function_type @ (listed, _) = self.function_types[position].as_ref()?;
+                let impurity = self.first_item(*body, |item| match item {
+                    Item::Effect(Effect::Foreign(effect)) => !listed.contains(&effect),
+                    Item::Effect(Effect::Unknown(_)) => true,
+                    Item::Changed(_) => false,
+                })?;
+
+                Some((
+                    self.names[position].1,
+                    &*self.imports[position],
+                    &*self.scopes[position],
+                    function_type,
+                    impurity,
+                ))
             },
         )
     }

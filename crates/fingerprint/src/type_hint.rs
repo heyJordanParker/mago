@@ -68,6 +68,9 @@ impl Fingerprintable for FunctionHint<'_> {
         for parameter in &self.parameters {
             parameter.fingerprint_with_hasher(hasher, resolved_names, options);
         }
+        for effect in self.uses.iter().flat_map(|uses| uses.names.iter()) {
+            resolved_names.get(effect).hash(hasher);
+        }
     }
 }
 

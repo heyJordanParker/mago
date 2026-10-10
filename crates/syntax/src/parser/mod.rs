@@ -58,6 +58,8 @@ where
     pub(crate) state: State,
     pub(crate) stream: TokenStream<'input, 'arena, A>,
     pub(crate) errors: Vec<'arena, ParseError, A>,
+    /// The text being parsed, which an error quotes to show the code to write instead.
+    pub(crate) source: &'input [u8],
 }
 
 impl<'input, 'arena, A> Parser<'input, 'arena, A>
@@ -95,7 +97,7 @@ where
         };
         let stream = TokenStream::new(arena, lexer);
 
-        Self { arena, dialect, state: State::default(), stream, errors: Vec::new_in(arena) }
+        Self { arena, dialect, state: State::default(), stream, errors: Vec::new_in(arena), source: content }
     }
 
     /// Creates a new parser for the given file, in the dialect its name selects.

@@ -47,6 +47,13 @@ pub(crate) fn is_contained_by(
         return false;
     }
 
+    // Spec section 29: a value of a PHP# function type fits another only when that type lists every effect its own does.
+    if let (Some(container_effects), Some(input_effects)) = (&container_signature.effects, &input_signature.effects)
+        && !input_effects.iter().all(|effect| container_effects.contains(effect))
+    {
+        return false;
+    }
+
     let container_params = container_signature.get_parameters();
     let input_params = input_signature.get_parameters();
     let input_has_variadic = input_params.last().is_some_and(|p| p.is_variadic());

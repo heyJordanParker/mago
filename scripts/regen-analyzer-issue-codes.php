@@ -361,6 +361,7 @@ final class AnalyzerCodeModuleGenerator
         'extern-on-sharp',
         'impure-getter',
         'impure-law',
+        'unlisted-effect',
         'unproven-law',
         'non-existent-law',
         'missing-lean',

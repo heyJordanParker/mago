@@ -1318,12 +1318,18 @@ fn scrape_type_properties(
     }
 
     let id = atomic.get_id();
-    // Two signatures with one id share their parameter and return types, and the folded one keeps the PHP# rule for
-    // its parameters if PHP# wrote either.
+    // Two signatures with one id share their parameter and return types. The folded one keeps the PHP# rule for its
+    // parameters if PHP# wrote either, and a value of it may have the effects either lists.
     if let TAtomic::Callable(TCallable::Signature(signature)) = &mut atomic
         && let Some(TAtomic::Callable(TCallable::Signature(existing))) = combination.value_types.get(&id)
+        && let Some(existing_effects) = &existing.effects
     {
-        signature.is_sharp |= existing.is_sharp;
+        let effects = signature.effects.get_or_insert_with(Vec::new);
+        for effect in existing_effects {
+            if !effects.contains(effect) {
+                effects.push(*effect);
+            }
+        }
     }
 
     combination.value_types.insert(id, atomic);
@@ -1794,20 +1800,30 @@ mod tests {
     }
 
     #[test]
-    fn test_combine_signatures_of_one_id_keeps_the_sharp_rule_of_either() {
+    fn test_combine_signatures_of_one_id_keeps_the_sharp_rule_and_the_effects_of_either() {
         let strings = TUnion::from_atomic(TAtomic::Array(TArray::List(TList::new(Arc::new(TUnion::from_atomic(
             TAtomic::Scalar(TScalar::string()),
         ))))));
         let php = TCallableSignature::new(false, true)
             .with_parameters(vec![TCallableParameter::new(Some(Arc::new(strings)), false, false, false)])
             .with_return_type(Some(Arc::new(TUnion::from_atomic(TAtomic::Scalar(TScalar::int())))));
-        let sharp = TCallableSignature { is_sharp: true, ..php.clone() };
+        let pure = TCallableSignature { effects: Some(vec![]), ..php.clone() };
+        let http = TCallableSignature { effects: Some(vec![word("Sharp\\Http")]), ..php.clone() };
+        let mail = TCallableSignature { effects: Some(vec![word("Sharp\\Mail")]), ..php.clone() };
         let atomic = |signature: &TCallableSignature| TAtomic::Callable(TCallable::Signature(signature.clone()));
+        let combined = |types: Vec<TAtomic>| combine(types, &CodebaseMetadata::default(), CombinerOptions::default());
 
-        for types in [vec![atomic(&sharp), atomic(&php)], vec![atomic(&php), atomic(&sharp)]] {
-            let combined = combine(types, &CodebaseMetadata::default(), CombinerOptions::default());
-
-            assert_eq!(combined, [atomic(&sharp)]);
+        for types in [vec![atomic(&pure), atomic(&php)], vec![atomic(&php), atomic(&pure)]] {
+            assert_eq!(combined(types), [atomic(&pure)]);
         }
+        for types in
+            [vec![atomic(&http), atomic(&php)], vec![atomic(&php), atomic(&http)], vec![atomic(&http), atomic(&pure)]]
+        {
+            assert_eq!(combined(types), [atomic(&http)]);
+        }
+        assert_eq!(
+            combined(vec![atomic(&http), atomic(&mail)]),
+            [atomic(&TCallableSignature { effects: Some(vec![word("Sharp\\Mail"), word("Sharp\\Http")]), ..php })]
+        );
     }
 }
