@@ -5218,13 +5218,12 @@ fn a_function_type_taking_a_function_type_with_an_effect_is_checked_as_its_php_t
 /// a standard effect by its short name, and an imported one by its import's name.
 #[test]
 fn a_sharp_message_names_a_function_type_with_its_effects_inside_its_brackets() {
-    let sharp = "namespace Demo;\n\nimport App.Effects.Payments as Pay;\n\nclass Receipt\n{\n    public string step(Function<int(int) uses Http, Pay> step) => `Step: ${step}`;\n}\n";
-    let payments = ("src/App/Effects/Payments.php", "<?php\n\nnamespace App\\Effects;\n\nfinal class Payments\n{\n}\n");
+    let sharp = "namespace Demo;\n\nimport Sharp.Mail as Post;\n\nclass Receipt\n{\n    public string step(Function<int(int) uses Http, Post> step) => `Step: ${step}`;\n}\n";
 
     assert_eq!(
-        worded(("src/Demo/Receipt.sharp", sharp), &[payments]),
+        worded(("src/Demo/Receipt.sharp", sharp), &[]),
         [
-            "7:74 invalid-operand A template shows `int`, `float`, `string` or `bool`, and `Function<int(int) uses Http, Pay>` is none of them. | This is `Function<int(int) uses Http, Pay>`. | Show a value taken from it instead, such as a property or the result of a method.",
+            "7:75 invalid-operand A template shows `int`, `float`, `string` or `bool`, and `Function<int(int) uses Http, Post>` is none of them. | This is `Function<int(int) uses Http, Post>`. | Show a value taken from it instead, such as a property or the result of a method.",
         ]
     );
 }
@@ -8554,14 +8553,14 @@ fn a_law_calling_plain_php_with_an_effect_is_refused_on_the_call() {
 /// A law that reaches an effect through PHP# code in another file names the method it reaches.
 #[test]
 fn a_law_reaching_a_method_with_an_effect_in_another_file_is_refused() {
-    let clock = (
-        "src/Lib/Clock.php",
-        "<?php\n\nnamespace Lib;\n\nfinal class Clock\n{\n    public static function now(): int\n    {\n        return time();\n    }\n}\n",
+    let timer = (
+        "src/Lib/Timer.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Timer\n{\n    public static function now(): int\n    {\n        return time();\n    }\n}\n",
     );
-    let stub = ("app/Stubs/Clock.sharp", "namespace App.Stubs;\n\nimport Lib.Clock;\n\nextern Clock.now uses Clock;\n");
+    let stub = ("app/Stubs/Timer.sharp", "namespace App.Stubs;\n\nimport Lib.Timer;\n\nextern Timer.now uses Clock;\n");
     let order = (
         "app/Shop/Order.sharp",
-        "namespace App.Shop;\n\nimport Lib.Clock;\n\npublic class Order\n{\n    public int total() => Clock.now();\n}\n",
+        "namespace App.Shop;\n\nimport Lib.Timer;\n\npublic class Order\n{\n    public int total() => Timer.now();\n}\n",
     );
     let checkout = (
         "app/Shop/Checkout.sharp",
@@ -8569,9 +8568,9 @@ fn a_law_reaching_a_method_with_an_effect_in_another_file_is_refused() {
     );
 
     assert_eq!(
-        effect_issues(&[checkout, order, stub, clock]),
+        effect_issues(&[checkout, order, stub, timer]),
         [
-            "app/Shop/Checkout.sharp:5:38 impure-law: Law `totalMatches` reaches `Order.total`, which calls `Clock.now` with the effect `Clock`. Laws hold only over pure code."
+            "app/Shop/Checkout.sharp:5:38 impure-law: Law `totalMatches` reaches `Order.total`, which calls `Timer.now` with the effect `Clock`. Laws hold only over pure code."
         ]
     );
 }

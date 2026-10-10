@@ -512,11 +512,12 @@ fn a_bare_extern_target_that_is_not_imported_is_a_global_function() {
 /// effect resolves through the imports.
 #[test]
 fn an_effect_name_binds_as_a_class_name() {
-    const CODE: &str = "namespace App.Stubs;\n\nimport App.Effects.Payments;\n\nextern now uses Http, Database, Files, Console, Process, Clock, Random, Cache, Mail, Environment, Payments;\n";
+    const CODE: &str = "namespace App.Stubs;\n\nimport App.Effects.Payments;\n\nextern now uses Http, Database, Files, Console, Process, Clock, Random, Cache, Mail, Environment, Events, Payments;\n";
     let arena = LocalArena::new();
     let names = bind(&arena, CODE);
 
-    for effect in ["Http", "Database", "Files", "Console", "Process", "Clock", "Random", "Cache", "Mail", "Environment"]
+    for effect in
+        ["Http", "Database", "Files", "Console", "Process", "Clock", "Random", "Cache", "Mail", "Environment", "Events"]
     {
         assert_eq!(binding(&names, CODE, effect, 0), Some(Binding::Class), "`{effect}`");
         assert_eq!(String::from_utf8_lossy(resolved(&names, CODE, effect, 0)), format!("Sharp\\{effect}"));
