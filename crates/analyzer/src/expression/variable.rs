@@ -163,13 +163,7 @@ where
     block_context.add_conditionally_referenced_variable_atom(variable_name_bytes, variable_atom);
 
     let variable_type = match block_context.locals.get(&variable_atom) {
-        Some(variable_type) => {
-            if variable_type.is_never() && block_context.refused_locals.contains(&variable_atom) {
-                context.refused_reads.insert(variable_span);
-            }
-
-            Rc::clone(variable_type)
-        }
+        Some(variable_type) => Rc::clone(variable_type),
         None => {
             if block_context.variables_possibly_in_scope.contains(&variable_atom) {
                 if !block_context.flags.inside_isset() && !block_context.flags.inside_unset() {

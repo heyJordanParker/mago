@@ -36,7 +36,6 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
-use crate::expression::is_refused;
 use crate::invocation::InvocationTarget;
 use crate::invocation::analyzer::adjust_offset_for_variadic;
 use crate::statement::function_like::closure_parameter_types;
@@ -185,11 +184,6 @@ pub fn verify_argument_type<'arena, A>(
 ) where
     A: Arena,
 {
-    // A refused PHP# argument is `never`, and its error already reports it.
-    if context.dialect.is_sharp() && is_refused(context, input_expression) {
-        return;
-    }
-
     let target_kind_str = invocation_target.guess_kind();
     let effective_parameter_name = invocation_target.get_effective_parameter_name(argument_offset);
     let argument_label = effective_parameter_name.map_or_else(

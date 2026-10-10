@@ -2,7 +2,6 @@ use std::cell::OnceCell;
 use std::sync::Arc;
 
 use foldhash::HashMap;
-use foldhash::HashSet;
 use mago_allocator::Arena;
 use mago_word::Word;
 use mago_word::WordMap;
@@ -39,6 +38,7 @@ use crate::code::IssueCode;
 use crate::context::assertion::AssertionContext;
 use crate::context::block::BlockContext;
 use crate::expression::binary::utils::display_operand;
+use crate::expression::is_refused_type;
 use crate::external::ExternalAnalysisSession;
 use crate::plugin::PluginRegistry;
 use crate::settings::Settings;
@@ -81,9 +81,6 @@ where
     /// The patterns of the PHP# `is` and `match` forms being analyzed, each with the `is` written before it, so a
     /// report on their PHP names a pattern as the file writes it.
     pub(super) patterns: Vec<(Option<Keyword<'arena>>, &'arena Pattern<'arena>)>,
-    /// The reads of a local that holds a value a parse error refused, as `BlockContext::refused_locals` names them.
-    /// A read is refused as the value is.
-    pub(super) refused_reads: HashSet<Span>,
     class_initializers: WordMap<WordSet>,
     /// How many class-likes of the codebase have each lowercase short name, counted the first time a message asks.
     pub(super) short_name_counts: OnceCell<HashMap<String, u32>>,
@@ -125,7 +122,6 @@ where
             additional_symbol_references,
             temporaries: 0,
             patterns: Vec::new(),
-            refused_reads: HashSet::default(),
             class_initializers: WordMap::default(),
             short_name_counts: OnceCell::new(),
         }
@@ -195,7 +191,7 @@ where
             return;
         };
 
-        if condition_type.is_bool() || condition_type.is_never() {
+        if condition_type.is_bool() || condition_type.is_never() || is_refused_type(condition_type) {
             return;
         }
 

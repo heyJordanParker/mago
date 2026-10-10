@@ -64,9 +64,6 @@ pub struct BlockContext<'ctx> {
     pub derived_local_sources: WordMap<Word>,
     pub possibly_undefined_variable_ids: WordSet,
 
-    /// Locals whose value is an expression a parse error refused. A read of one is refused as the value is.
-    pub refused_locals: WordSet,
-
     /// Maps variable names to the number of times they have been referenced in the current scope.
     ///
     /// This might not contain all variables in `locals`, as it is only updated when a variable is referenced.
@@ -215,7 +212,6 @@ impl<'ctx> BlockContext<'ctx> {
             possibly_assigned_variable_ids: WordSet::default(),
             derived_local_sources: WordMap::default(),
             possibly_undefined_variable_ids: WordSet::default(),
-            refused_locals: WordSet::default(),
             referenced_counts: WordMap::default(),
             references_in_scope: WordMap::default(),
             references_to_external_scope: WordSet::default(),

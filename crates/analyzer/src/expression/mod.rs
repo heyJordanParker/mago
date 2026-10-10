@@ -199,8 +199,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                 Expression::Construct(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::Throw(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::Clone(expr) => expr.analyze(context, block_context, artifacts),
-                Expression::Error(_) | Expression::Is(_) if is_refused(context, self) => {
-                    artifacts.set_expression_type(&self, get_never());
+                Expression::Error(_) | Expression::Is(_) if is_refused(self) => {
+                    let refused_type =
+                        if context.dialect.is_sharp() { TUnion::from_atomic(TAtomic::Error) } else { get_never() };
+                    artifacts.set_expression_type(&self, refused_type);
 
                     Ok(())
                 }
@@ -639,19 +641,22 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Parenthesized<'arena> {
     }
 }
 
-/// Whether an error already refuses `expression`: it failed to parse, it is `!x is T`, which `check_slice` refuses,
-/// or it reads a local whose value is refused. Its type is `never`, and it adds no issue.
-pub(crate) fn is_refused<A>(context: &Context<'_, '_, A>, expression: &Expression<'_>) -> bool
-where
-    A: Arena,
-{
+/// Whether an error already refuses `expression`: it failed to parse, or it is `!x is T`, which `check_slice` refuses.
+/// Its type is the error type in PHP# and `never` in PHP, and it adds no issue.
+pub(crate) const fn is_refused(expression: &Expression<'_>) -> bool {
     match expression {
         Expression::Error(_) => true,
         Expression::Is(is) => {
             matches!(is.value, Expression::UnaryPrefix(prefix) if matches!(prefix.operator, UnaryPrefixOperator::Not(_)))
         }
-        _ => context.refused_reads.contains(&expression.span()),
+        _ => false,
     }
+}
+
+/// Whether `union` is the type of a refused PHP# expression. A check that judges an operand's kind skips it, and
+/// the expression that reads it gets the same type, because the parse error already reports the expression.
+pub(crate) fn is_refused_type(union: &TUnion) -> bool {
+    union.types.iter().any(|atomic| matches!(atomic, TAtomic::Error))
 }
 
 pub fn find_expression_logic_issues<'ctx, 'arena, A>(
