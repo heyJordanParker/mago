@@ -324,6 +324,7 @@ struct Lowering<'lowering, 'arena> {
     by_reference: HashSet<u32>,
     /// How many loop bodies hold the statement being lowered, inside the innermost method or lambda.
     loop_depth: u32,
+    captures_type_arguments: bool,
     /// The name of the property whose accessor body is being lowered, which `field` reads and writes.
     property: Vec<u8>,
     /// Each inline form the lowering copied, with its fingerprint, as often as it copied it.
@@ -353,6 +354,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             tested_links: Vec::new(),
             by_reference: HashSet::default(),
             loop_depth: 0,
+            captures_type_arguments: false,
             property: Vec::new(),
             inlined: Vec::new(),
             type_parameters: HashMap::default(),
@@ -1557,6 +1559,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 match self.types.type_arguments(name, instantiation.span()) {
                     Some(type_arguments) => {
+                        self.captures_type_arguments |= type_arguments.contains('#');
                         let type_arguments = self.string(0, line, type_arguments.as_bytes());
 
                         self.node(SHARP_AST_SHARP_TYPE_ARGS, 0, line, &[new, type_arguments])
@@ -2072,33 +2075,30 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     /// Spec section 3: a lambda captures the variable itself. PHP's `fn` captures by value what its body reads, which
     /// is the variable itself when nothing writes it, so a lambda with an expression body that captures no written
-    /// local is an `ARROW_FUNC`, as php-src's grammar builds `fn`, with its expression as its body. Any other is a
-    /// `CLOSURE` whose body returns the expression.
+    /// local is an `ARROW_FUNC`, as php-src's grammar builds `fn`, with its expression as its body. Any other, and one
+    /// that captures its method's type arguments, is a `CLOSURE` whose body returns the expression.
     fn arrow_function(&mut self, arrow_function: &ArrowFunction) -> u32 {
         let lambda = arrow_function.span();
-        if !self.names.captures(&lambda).iter().any(|(_, local)| self.names.is_written(local)) {
-            let parameters = self.lambda_parameters(&arrow_function.parameter_list);
-            let body = self.lambda_body(|lowering| lowering.expression(arrow_function.expression));
-
+        let parameters = self.lambda_parameters(&arrow_function.parameter_list);
+        let (value, captures_type_arguments) =
+            self.lambda_body(|lowering| lowering.expression(arrow_function.expression));
+        if !captures_type_arguments
+            && !self.names.captures(&lambda).iter().any(|(_, local)| self.names.is_written(local))
+        {
             return self.declaration(
                 SHARP_AST_ARROW_FUNC,
                 0,
                 lambda,
                 arrow_function.expression,
                 b"",
-                &[parameters, NULL, body, NULL, NULL],
+                &[parameters, NULL, value, NULL, NULL],
             );
         }
 
-        let parameters = self.lambda_parameters(&arrow_function.parameter_list);
-        let uses = self.closure_uses(lambda);
-        let body = self.lambda_body(|lowering| {
-            let line = lowering.line(arrow_function.expression);
-            let value = lowering.expression(arrow_function.expression);
-            let r#return = lowering.node(SHARP_AST_RETURN, 0, line, &[value]);
-
-            lowering.node(SHARP_AST_STMT_LIST, 0, line, &[r#return])
-        });
+        let uses = self.closure_uses(lambda, captures_type_arguments);
+        let line = self.line(arrow_function.expression);
+        let r#return = self.node(SHARP_AST_RETURN, 0, line, &[value]);
+        let body = self.node(SHARP_AST_STMT_LIST, 0, line, &[r#return]);
 
         self.declaration(SHARP_AST_CLOSURE, 0, lambda, lambda, b"", &[parameters, uses, body, NULL, NULL])
     }
@@ -2107,8 +2107,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn closure(&mut self, closure: &Closure) -> u32 {
         let lambda = closure.span();
         let parameters = self.lambda_parameters(&closure.parameter_list);
-        let uses = self.closure_uses(lambda);
-        let body = self.lambda_body(|lowering| lowering.block(&closure.body));
+        let (body, captures_type_arguments) = self.lambda_body(|lowering| lowering.block(&closure.body));
+        let uses = self.closure_uses(lambda, captures_type_arguments);
 
         self.declaration(SHARP_AST_CLOSURE, 0, lambda, lambda, b"", &[parameters, uses, body, NULL, NULL])
     }
@@ -2125,25 +2125,34 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     /// The `use` list of a `CLOSURE`: each local the lambda captures, in first-use order, by reference with
-    /// `ZEND_BIND_REF` when code writes it and by value otherwise, or null when it captures none.
-    fn closure_uses(&mut self, lambda: Span) -> u32 {
+    /// `ZEND_BIND_REF` when code writes it and by value otherwise, then by value the method's hidden local of its type
+    /// arguments when the lambda captures them, or null when it captures none.
+    fn closure_uses(&mut self, lambda: Span, captures_type_arguments: bool) -> u32 {
         let line = self.line(lambda);
         let mut uses = Vec::new();
         for &(name, local) in self.names.captures(&lambda) {
             let attr = if self.names.is_written(&local) { ZEND_BIND_REF } else { 0 };
             uses.push(self.string(attr, line, name));
         }
+        if captures_type_arguments {
+            uses.push(self.string(0, line, b"\0<sharp>\0types"));
+        }
 
         if uses.is_empty() { NULL } else { self.node(SHARP_AST_CLOSURE_USES, 0, line, &uses) }
     }
 
-    /// Lowers a lambda's body, which runs in a frame of its own, outside any loop of the method around it.
-    fn lambda_body(&mut self, lower: impl FnOnce(&mut Self) -> u32) -> u32 {
+    /// Lowers a lambda's body, which runs in a frame of its own, outside any loop of the method around it. It also
+    /// gives whether the body, or a lambda in it, wrote a type text that names the method's own type parameter as
+    /// `#i`, so the lambda captures the method's type arguments, as each lambda around it does.
+    fn lambda_body(&mut self, lower: impl FnOnce(&mut Self) -> u32) -> (u32, bool) {
         let loop_depth = std::mem::replace(&mut self.loop_depth, 0);
+        let around = std::mem::take(&mut self.captures_type_arguments);
         let body = lower(self);
         self.loop_depth = loop_depth;
+        let captures_type_arguments = self.captures_type_arguments;
+        self.captures_type_arguments |= around;
 
-        body
+        (body, captures_type_arguments)
     }
 
     /// A list or map literal is an `ARRAY` with `ZEND_ARRAY_SYNTAX_SHORT`, as php-src's grammar builds `[…]`. Each
@@ -2447,6 +2456,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let mut arguments = self.argument_nodes(list, keys);
         let line = self.line(list);
         if let Some(type_arguments) = self.types.call_type_arguments(call) {
+            self.captures_type_arguments |= type_arguments.contains('#');
             let text = self.string(0, line, type_arguments.as_bytes());
             arguments.push(self.node(SHARP_AST_SHARP_TYPE_ARGS, 0, line, &[NULL, text]));
         }

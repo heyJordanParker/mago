@@ -3577,7 +3577,8 @@ fn a_bound_writes_a_type_parameter_of_its_own_class_as_any() {
 /// its argument list: a `SHARP_TYPE_ARGS` without a `new`. A type parameter of the class the call is in is `$` and its
 /// index, and one of the method the call is in is `#` and its index, which the engine reads from the method's own
 /// call. A lambda writes them the same way, and the engine reads them from the method's call the lambda captured them
-/// from. A method whose call needs its type arguments, or whose parameter names a PHP# class with type
+/// from: a lambda whose body, or a lambda in it, names a `#` is a `CLOSURE` whose `use` list ends with the method's
+/// hidden local, by value. A method whose call needs its type arguments, or whose parameter names a PHP# class with type
 /// arguments or a type parameter, ends its parameter list with its metadata: a `SHARP_TYPE_ARGS` of the bounds of its
 /// own type parameters and a type text list with each parameter's type, `Any?` for one the engine never checks. Plain
 /// PHP's generics are erased, so a parameter of a plain PHP class with type arguments is never checked.
@@ -3610,6 +3611,8 @@ fn a_generic_call_carries_its_type_arguments_and_a_generic_method_its_metadata()
             public Box<T> box<T : DatabaseEntity>() => new Box<T>();
 
             public Function<Box<T>()> later<T>() => () => new Box<T>();
+
+            public Function<Function<List<T>()>()> nested<T>(T item) => () => () => Repository.repeat<T>(item, 1);
 
             public void show(PaginatedList<Order> page, int count) { }
 
@@ -3675,14 +3678,52 @@ fn a_generic_call_carries_its_type_arguments_and_a_generic_method_its_metadata()
         indoc! {r##"
             STMT_LIST
               RETURN
-                ARROW_FUNC "" @25-25
+                CLOSURE "" @25-25
                   PARAM_LIST
+                  CLOSURE_USES
+                    ZVAL "\0<sharp>\0types"
+                  STMT_LIST
+                    RETURN
+                      SHARP_TYPE_ARGS
+                        NEW
+                          ZVAL "App\\Box"
+                          ARG_LIST
+                        ZVAL "#0"
                   null
-                  SHARP_TYPE_ARGS
-                    NEW
-                      ZVAL "App\\Box"
-                      ARG_LIST
-                    ZVAL "#0"
+                  null
+        "##}
+    );
+    assert_eq!(
+        lowered.body_of("nested"),
+        indoc! {r##"
+            STMT_LIST
+              RETURN
+                CLOSURE "" @27-27
+                  PARAM_LIST
+                  CLOSURE_USES
+                    ZVAL "item"
+                    ZVAL "\0<sharp>\0types"
+                  STMT_LIST
+                    RETURN
+                      CLOSURE "" @27-27
+                        PARAM_LIST
+                        CLOSURE_USES
+                          ZVAL "item"
+                          ZVAL "\0<sharp>\0types"
+                        STMT_LIST
+                          RETURN
+                            STATIC_CALL
+                              ZVAL "App\\Repository"
+                              ZVAL "repeat"
+                              ARG_LIST
+                                VAR
+                                  ZVAL "item"
+                                ZVAL 1
+                                SHARP_TYPE_ARGS
+                                  null
+                                  ZVAL "#0"
+                        null
+                        null
                   null
                   null
         "##}
