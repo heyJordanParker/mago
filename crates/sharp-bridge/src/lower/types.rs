@@ -176,29 +176,14 @@ impl<'analysis> Types<'analysis> {
 
     /// The type arguments the generic method call at `span` gives the method, as [`Self::type_arguments`] writes those
     /// of a `new`. None when the method declares no type parameter, or a built-in class declares it, whose method never
-    /// reads them. A method of any project class, PHP# or plain PHP, may run a PHP# method that overrides or implements
-    /// it, so a call through a plain PHP `@template` interface or parent carries them, and a plain PHP method ignores
-    /// them. The class that declares the method decides, so `super.m()` carries them through a plain PHP parent that
-    /// inherits a PHP# `m`.
+    /// reads them, as the prelude's `Sharp\ListMethods` and `Sharp\MapMethods` declare a list's and a map's. A method
+    /// of any project class, PHP# or plain PHP, may run a PHP# method that overrides or implements it, so a call through
+    /// a plain PHP `@template` interface or parent carries them, and a plain PHP method ignores them. The class that
+    /// declares the method decides, so `super.m()` carries them through a plain PHP parent that inherits a PHP# `m`.
     pub(crate) fn call_type_arguments(&self, call: &Expression) -> Option<String> {
         let span = call.span();
         let arguments = self.artifacts.inferred_type_arguments.get(&(span.start.offset, span.end.offset))?;
-        let (object, names_class) = match call {
-            Expression::Call(Call::Method(call)) => (call.object, self.names.static_call_class(call).is_some()),
-            Expression::Call(Call::NullSafeMethod(call)) => (call.object, false),
-            _ => unreachable!("only a method call takes type arguments, not {span:?}"),
-        };
-        let callee = match object {
-            Expression::Self_(_) | Expression::Parent(_) => self.call_target(call).class,
-            // A list or a map runs its methods in the engine's built-in `Sharp\Collection`.
-            _ if !names_class
-                && receiver_classes(self.expression_type(object)).is_none()
-                && class_value_classes(self.expression_type(object)).is_none() =>
-            {
-                return None;
-            }
-            _ => self.call_target(call).class,
-        };
+        let callee = self.call_target(call).class;
         if self.codebase.get_class_like(callee.as_bytes()).is_none_or(|callee| callee.flags.is_built_in()) {
             return None;
         }
