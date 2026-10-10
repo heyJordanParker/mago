@@ -524,6 +524,19 @@ fn an_effect_name_binds_as_a_class_name() {
     assert_eq!(resolved(&names, CODE, "Payments;", 1), b"App\\Effects\\Payments");
 }
 
+/// An effect a function type lists binds as a class name, as an `extern`'s does.
+#[test]
+fn an_effect_of_a_function_type_binds_as_a_class_name() {
+    const CODE: &str = "namespace App.Shop;\n\nimport App.Effects.Payments;\n\nclass Checkout\n{\n    private Map<string, Function<Charge(Cart) uses Http, Payments>> handlers = [:];\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "Http", 0), Some(Binding::Class));
+    assert_eq!(resolved(&names, CODE, "Http", 0), b"Sharp\\Http");
+    assert_eq!(binding(&names, CODE, "Payments>", 0), Some(Binding::Class));
+    assert_eq!(resolved(&names, CODE, "Payments>", 0), b"App\\Effects\\Payments");
+}
+
 #[test]
 fn a_collection_type_keeps_its_written_name_unresolved() {
     const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public void run(List<int> lines, Map<string, int> sizes)\n    {\n    }\n}\n";
