@@ -175,9 +175,11 @@ impl<'analysis> Types<'analysis> {
     }
 
     /// The type arguments the generic method call at `span` gives the method, as [`Self::type_arguments`] writes those
-    /// of a `new`. None when the method declares no type parameter, or PHP declares it, writing its type parameters in
-    /// docblocks the engine never reads. The class that declares the method decides, so `super.m()` carries them
-    /// through a plain PHP parent that inherits a PHP# `m`.
+    /// of a `new`. None when the method declares no type parameter, or a built-in class declares it, whose method never
+    /// reads them. A method of any project class, PHP# or plain PHP, may run a PHP# method that overrides or implements
+    /// it, so a call through a plain PHP `@template` interface or parent carries them, and a plain PHP method ignores
+    /// them. The class that declares the method decides, so `super.m()` carries them through a plain PHP parent that
+    /// inherits a PHP# `m`.
     pub(crate) fn call_type_arguments(&self, call: &Expression) -> Option<String> {
         let span = call.span();
         let arguments = self.artifacts.inferred_type_arguments.get(&(span.start.offset, span.end.offset))?;
@@ -188,7 +190,7 @@ impl<'analysis> Types<'analysis> {
         };
         let callee = match object {
             Expression::Self_(_) | Expression::Parent(_) => self.call_target(call).class,
-            // A list or a map runs its methods in the engine's `Sharp\Collection`, which PHP declares.
+            // A list or a map runs its methods in the engine's built-in `Sharp\Collection`.
             _ if !names_class
                 && receiver_classes(self.expression_type(object)).is_none()
                 && class_value_classes(self.expression_type(object)).is_none() =>
@@ -197,7 +199,7 @@ impl<'analysis> Types<'analysis> {
             }
             _ => self.call_target(call).class,
         };
-        if !self.codebase.get_class_like(callee.as_bytes()).is_some_and(|callee| callee.flags.is_sharp()) {
+        if self.codebase.get_class_like(callee.as_bytes()).is_none_or(|callee| callee.flags.is_built_in()) {
             return None;
         }
 
@@ -212,8 +214,8 @@ impl<'analysis> Types<'analysis> {
     /// the bounds of its own type parameters, which a call from plain PHP gives it, and a type text list with one entry
     /// per parameter that a call from plain PHP checks its argument against. An entry is the parameter's type when part
     /// of it is a PHP# class with type arguments or a type parameter, and `Any?` otherwise: plain PHP's generics are
-    /// erased, as [`Self::call_type_arguments`] erases them. Each half is None when the method declares no type
-    /// parameter, or no parameter needs a check.
+    /// erased, since an object of a plain PHP generic class carries no type arguments. Each half is None when the method
+    /// declares no type parameter, or no parameter needs a check.
     pub(crate) fn method_metadata(&self, class: &[u8], method: &[u8]) -> (Option<String>, Option<String>) {
         let Some(metadata) = self.codebase.get_method(class, method) else {
             return (None, None);

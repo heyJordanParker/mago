@@ -3396,34 +3396,46 @@ fn new_creates_the_imported_class_by_its_full_name() {
     );
 }
 
-/// A file whose `run` creates, calls statically and calls null-safely with the type arguments `arguments` writes.
-fn type_arguments_file(arguments: [&str; 3]) -> String {
-    let [created, decoded, found] = arguments;
-
-    format!(
-        "namespace App.Tenant;\n\nimport Lib.Json;\nimport Lib.Order;\nimport Lib.PaginatedList;\nimport Lib.Repository;\nimport Lib.WebhookPayload;\n\nclass Report\n{{\n    private Repository? repository = null;\n\n    public void run(List<Order> rows, string body, int id)\n    {{\n        const page = new PaginatedList{created}(rows);\n        const payload = Json.decode{decoded}(body);\n        const found = this.repository?.find{found}(id);\n    }}\n}}\n"
-    )
-}
-
 /// ```php
 /// $page = new \Lib\PaginatedList($rows);
 /// $payload = \Lib\Json::decode($body);
 /// $found = $this->repository?->find($id);
 /// ```
 ///
-/// A plain PHP class's `@template` type arguments are erased, so the type arguments of `new`, a static call and a
-/// null-safe call lower to nothing, and each is the node it is without them.
+/// A plain PHP class's `@template` type arguments are erased, so those of its `new` lower to nothing. A call of its
+/// generic method, static or null-safe, carries them, since a PHP# method that overrides or implements it reads them.
 #[test]
-fn type_arguments_of_new_and_calls_lower_to_nothing() {
-    let library = [(
-        "src/Lib/Json.php",
-        "<?php namespace Lib; class Order {} class WebhookPayload {} /** @template T */ class PaginatedList { /** @param list<T> $rows */ public function __construct(array $rows) {} } final class Json { /** @template T @return T */ public static function decode(string $body): mixed { return null; } } interface Repository { /** @template T @return T|null */ public function find(int $id): mixed; }",
-    )];
-    let generic = Lowered::with(&type_arguments_file(["<Order>", "<WebhookPayload>", "<Order>"]), &library);
-    let plain = Lowered::with(&type_arguments_file(["", "", ""]), &library);
+fn type_arguments_of_a_plain_php_new_lower_to_nothing_and_of_a_call_to_its_type_arguments() {
+    let lowered = Lowered::with(
+        indoc! {"
+        namespace App.Tenant;
+
+        import Lib.Json;
+        import Lib.Order;
+        import Lib.PaginatedList;
+        import Lib.Repository;
+        import Lib.WebhookPayload;
+
+        class Report
+        {
+            private Repository? repository = null;
+
+            public void run(List<Order> rows, string body, int id)
+            {
+                const page = new PaginatedList<Order>(rows);
+                const payload = Json.decode<WebhookPayload>(body);
+                const found = this.repository?.find<Order>(id);
+            }
+        }
+    "},
+        &[(
+            "src/Lib/Json.php",
+            "<?php namespace Lib; class Order {} class WebhookPayload {} /** @template T */ class PaginatedList { /** @param list<T> $rows */ public function __construct(array $rows) {} } final class Json { /** @template T @return T */ public static function decode(string $body): mixed { return null; } } interface Repository { /** @template T @return T|null */ public function find(int $id): mixed; }",
+        )],
+    );
 
     assert_eq!(
-        generic.body(),
+        lowered.body(),
         indoc! {r#"
             STMT_LIST
               ASSIGN
@@ -3443,6 +3455,9 @@ fn type_arguments_of_new_and_calls_lower_to_nothing() {
                   ARG_LIST
                     VAR
                       ZVAL "body"
+                    SHARP_TYPE_ARGS
+                      null
+                      ZVAL "Lib.WebhookPayload"
               ASSIGN
                 VAR
                   ZVAL "found"
@@ -3455,9 +3470,11 @@ fn type_arguments_of_new_and_calls_lower_to_nothing() {
                   ARG_LIST
                     VAR
                       ZVAL "id"
+                    SHARP_TYPE_ARGS
+                      null
+                      ZVAL "Lib.Order"
         "#}
     );
-    assert_eq!(generic.tree(), plain.tree());
 }
 
 /// A class-like's metadata holds, first, the type arguments its header gives each generic parent and interface, as a
@@ -3764,8 +3781,8 @@ fn a_generic_call_on_a_value_of_a_type_parameter_carries_its_type_arguments() {
     );
 }
 
-/// A list runs its methods in the engine's `Sharp\Collection`, which PHP declares, so a call of a generic one such as
-/// `map` carries no type arguments, as a call of any method PHP declares does.
+/// A list runs its methods in the engine's built-in `Sharp\Collection`, so a call of a generic one such as `map` carries
+/// no type arguments, as a call of any built-in method does.
 #[test]
 fn a_generic_method_call_on_a_list_carries_no_type_arguments() {
     let lowered = Lowered::with(
@@ -4543,6 +4560,65 @@ fn a_generic_super_call_through_a_plain_php_parent_carries_its_type_arguments() 
                       null
                       ZVAL "App.Order"
         "#}
+    );
+}
+
+/// The body of `run`, which calls `wrapper.wrap(order)` through `Wrapper`, the plain PHP class-like `plain` declares,
+/// whose `@template` method `wrap` the PHP# method `wrap` declares again in `SharpWrapper`.
+fn a_call_through_plain_php(wrap: &str, plain: &str) -> String {
+    let code = format!(
+        "namespace App;\n\npublic class SharpWrapper : Wrapper\n{{\n    {wrap} Box<T> wrap<T>(T item) => new Box<T>();\n}}\n\npublic class Report\n{{\n    public Box<Order> run(Wrapper wrapper, Order order) => wrapper.wrap(order);\n}}\n"
+    );
+
+    Lowered::with(
+        &code,
+        &[
+            ("src/App/Box.sharp", "namespace App;\n\npublic class Box<TValue>\n{\n    public Box() { }\n}\n"),
+            ("src/App/Wrapper.php", plain),
+            ("src/App/Order.php", "<?php namespace App; final class Order {}"),
+        ],
+    )
+    .body_of("run")
+}
+
+const CALL_WITH_TYPE_ARGUMENTS: &str = indoc! {r#"
+    STMT_LIST
+      RETURN
+        METHOD_CALL
+          VAR
+            ZVAL "wrapper"
+          ZVAL "wrap"
+          ARG_LIST
+            VAR
+              ZVAL "order"
+            SHARP_TYPE_ARGS
+              null
+              ZVAL "App.Order"
+"#};
+
+/// A generic call through a plain PHP `@template` interface carries the type arguments the checker found, since the
+/// PHP# class that implements it reads them.
+#[test]
+fn a_generic_call_through_a_plain_php_interface_carries_its_type_arguments() {
+    assert_eq!(
+        a_call_through_plain_php(
+            "public",
+            "<?php namespace App; interface Wrapper {\n/**\n * @template T\n * @param T $item\n * @return Box<T>\n */\npublic function wrap(mixed $item): Box; }",
+        ),
+        CALL_WITH_TYPE_ARGUMENTS
+    );
+}
+
+/// A generic call through a plain PHP parent's `@template` method carries the type arguments the checker found, since
+/// the PHP# class that overrides it reads them.
+#[test]
+fn a_generic_call_through_a_plain_php_parent_carries_its_type_arguments() {
+    assert_eq!(
+        a_call_through_plain_php(
+            "public override",
+            "<?php namespace App; class Wrapper {\n/**\n * @template T\n * @param T $item\n * @return Box<T>\n */\npublic function wrap(mixed $item): Box { return new Box(); } }",
+        ),
+        CALL_WITH_TYPE_ARGUMENTS
     );
 }
 

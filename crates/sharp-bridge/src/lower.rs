@@ -2440,8 +2440,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_ARG_LIST, 0, self.line(list), &arguments)
     }
 
-    /// The arguments of the method call `call`. A PHP# generic method's call ends them with the type arguments the
-    /// checker found, a `SHARP_TYPE_ARGS` without a `new`, which the engine resolves right before the call.
+    /// The arguments of the method call `call`. A generic method's call ends them with the type arguments the checker
+    /// found, a `SHARP_TYPE_ARGS` without a `new`, which the engine resolves right before the call, unless a built-in
+    /// class declares the method.
     fn call_arguments(&mut self, list: &ArgumentList, call: &Expression, keys: &[usize]) -> u32 {
         let mut arguments = self.argument_nodes(list, keys);
         let line = self.line(list);
