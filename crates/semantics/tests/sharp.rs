@@ -71,6 +71,42 @@ fn extern_is_a_declaration_of_the_file_and_of_no_method_body() {
     assert_eq!(issues(code), ["13:9 This statement is not supported yet in PHP#."]);
 }
 
+const NOT_AN_EFFECT: &str = "is not an effect: `uses` takes Database, Http, Files, Console, Process, Clock, Random, Cache, Mail, Environment or Events.";
+
+/// Spec section 29: a function type's `uses` names effects, so a name that is no effect is refused, whether it names
+/// nothing or a class.
+#[test]
+fn a_function_type_uses_only_effects() {
+    let typo =
+        "namespace App.Shop;\n\nclass Checkout\n{\n    private Function<Charge(Cart) uses Htp>? charge = null;\n}\n";
+    let class = "namespace App.Shop;\n\nimport App.Orders.Order;\n\nclass Checkout\n{\n    private Function<Charge(Cart) uses Order>? charge = null;\n}\n";
+
+    assert_eq!(issues(typo), [format!("5:40 `Htp` {NOT_AN_EFFECT}")]);
+    assert_eq!(issues(class), [format!("7:40 `Order` {NOT_AN_EFFECT}")]);
+}
+
+/// An `extern`'s `uses` takes the same effects as a function type's.
+#[test]
+fn an_extern_uses_only_effects() {
+    let typo = "namespace App.Stubs;\n\nimport Lib.Foo;\n\nextern Foo.bar uses Htp;\n";
+    let class = "namespace App.Stubs;\n\nimport App.Orders.Order;\nimport Lib.Foo;\n\nextern Foo.baz uses Order;\n";
+
+    assert_eq!(issues(typo), [format!("5:21 `Htp` {NOT_AN_EFFECT}")]);
+    assert_eq!(issues(class), [format!("6:21 `Order` {NOT_AN_EFFECT}")]);
+}
+
+/// Every standard effect passes a `uses`, `Events` too, written bare or through an import of its class.
+#[test]
+fn a_uses_takes_every_standard_effect_bare_or_imported() {
+    let function_type = "namespace App.Shop;\n\nclass Checkout\n{\n    private Function<Charge(Cart) uses Http, Mail, Events>? charge = null;\n    private Function<int() uses Database, Files, Console, Process, Clock, Random, Cache, Environment>? all = null;\n}\n";
+    let extern_ = "namespace App.Stubs;\n\nimport Lib.Foo;\n\nextern Foo.bar uses Http, Events;\n";
+    let imported = "namespace App.Stubs;\n\nimport Lib.Foo;\nimport Sharp.Http;\n\nextern Foo.bar uses Http;\n";
+
+    assert_eq!(issues(function_type), Vec::<String>::new());
+    assert_eq!(issues(extern_), Vec::<String>::new());
+    assert_eq!(issues(imported), Vec::<String>::new());
+}
+
 /// Spec section 28: a law states a fact about the values of a class or an enum, and an interface has no values.
 #[test]
 fn a_law_is_a_member_of_a_class_or_an_enum_and_of_no_interface() {
